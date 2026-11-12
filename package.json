@@ -1,0 +1,24 @@
+{
+  "name": "minimi",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx test/dates.test.ts && tsx test/memory.test.ts && tsx test/recall.test.ts && tsx test/seed.test.ts && tsx test/reverify.test.ts && tsx test/reverify-flow.test.ts && tsx test/reverify-cost.test.ts && tsx test/gemini.test.ts && tsx test/failover.test.ts && tsx test/breaker.test.ts && tsx test/tavily.test.ts && tsx test/agent.test.ts && tsx test/context.test.ts",
+    "eval": "tsx eval/eval.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^3.1.0",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.3"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.25",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

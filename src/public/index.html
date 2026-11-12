@@ -1,0 +1,1551 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>minimi</title>
+    <style>
+      /* ------------------------------------------------------------------
+         Tokens. One warm neutral ramp, three text roles, one accent.
+         Semantic colours are reserved for the re-verify verdicts.
+         ------------------------------------------------------------------ */
+      :root {
+        color-scheme: light dark;
+
+        --bg: #f4f1ec;
+        --surface: #fbfaf8;
+        --surface-2: #efebe4;
+        --line: #ddd6ca;
+        --line-strong: #8c8376;
+        --ink: #1b1917;
+        --ink-2: #4e4941;
+        --ink-3: #6b6459;
+        --accent: #1d5c8f;
+        --accent-ink: #ffffff;
+        --changed: #8a3412;
+        --same: #1c6b46;
+        --mute: #6b6459;
+        --shadow: 0 1px 2px rgba(28, 25, 23, 0.06), 0 10px 28px -16px rgba(28, 25, 23, 0.22);
+        --selected: #d9e4ee;
+
+        --col: 40rem;
+        --radius: 10px;
+        --radius-lg: 14px;
+        --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+          sans-serif;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+        --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #131211;
+          --surface: #1b1a18;
+          --surface-2: #242220;
+          --line: #302d29;
+          --line-strong: #726c63;
+          --ink: #ede9e2;
+          --ink-2: #b5aea3;
+          --ink-3: #928b7f;
+          --accent: #8cb9e0;
+          --accent-ink: #0e161d;
+          --changed: #e08a5c;
+          --same: #74c295;
+          --mute: #928b7f;
+          --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 10px 28px -16px rgba(0, 0, 0, 0.8);
+          --selected: #2a3f52;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        -webkit-text-size-adjust: 100%;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        background: var(--bg);
+        color: var(--ink);
+        font: 16px/1.65 var(--sans);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      ::selection {
+        background: var(--selected);
+        color: var(--ink);
+      }
+
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: 3px;
+      }
+
+      /* --- skip link ------------------------------------------------- */
+      .skip {
+        position: absolute;
+        left: 8px;
+        top: -48px;
+        z-index: 20;
+        padding: 10px 14px;
+        background: var(--surface);
+        color: var(--ink);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius);
+        text-decoration: none;
+        font-size: 14px;
+        transition: top 120ms var(--ease);
+      }
+      .skip:focus {
+        top: 8px;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      /* --- top bar --------------------------------------------------- */
+      .topbar {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 12px 20px;
+        border-bottom: 1px solid var(--line);
+        background: var(--bg);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        color: var(--ink);
+      }
+      .brand .mark {
+        display: block;
+        color: var(--accent);
+      }
+      .brand h1 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+      }
+
+      .topbar-right {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .tz-field {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .tz-field label {
+        font-size: 13px;
+        color: var(--ink-3);
+      }
+      .tz-field input {
+        width: 19ch;
+        padding: 6px 9px;
+        font: 13px/1.4 var(--mono);
+        color: var(--ink);
+        background: var(--surface);
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        caret-color: var(--accent);
+      }
+
+      /* --- buttons --------------------------------------------------- */
+      .btn {
+        font: 500 14px/1 var(--sans);
+        padding: 9px 14px;
+        border-radius: 8px;
+        border: 1px solid transparent;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: background-color 120ms var(--ease), border-color 120ms var(--ease),
+          color 120ms var(--ease);
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: var(--accent-ink);
+      }
+      .btn-primary:hover {
+        background: color-mix(in srgb, var(--accent) 88%, var(--ink));
+      }
+      .btn-primary:active {
+        background: color-mix(in srgb, var(--accent) 80%, var(--ink));
+      }
+      .btn-quiet {
+        background: var(--surface);
+        border-color: var(--line-strong);
+        color: var(--ink-2);
+      }
+      .btn-quiet:hover {
+        background: var(--surface-2);
+        color: var(--ink);
+      }
+      .btn[aria-disabled="true"] {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .btn[aria-disabled="true"]:hover {
+        background: var(--surface);
+        color: var(--ink-2);
+      }
+
+      /* --- conversation ---------------------------------------------- */
+      #log {
+        overflow-y: auto;
+        overscroll-behavior-y: contain;
+        scrollbar-color: var(--line-strong) transparent;
+      }
+      /* The skip link moves focus here, so the region must show where focus went. */
+      #log:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+      }
+
+      .col {
+        max-width: var(--col);
+        margin: 0 auto;
+        padding: 24px 20px 8px;
+      }
+
+      .turn {
+        margin-bottom: 28px;
+      }
+
+      .turn-head {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        margin-bottom: 6px;
+      }
+      .who {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--ink-2);
+      }
+      .when {
+        font: 12px/1 var(--mono);
+        color: var(--ink-3);
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* The user's own words are quoted, not restyled as a card. */
+      .turn-user .turn-body {
+        color: var(--ink-2);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        padding-left: 12px;
+        border-left: 2px solid var(--line);
+      }
+
+      .turn-assistant .turn-body {
+        color: var(--ink);
+      }
+
+      /* --- status chips ---------------------------------------------- */
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 0 0 10px;
+      }
+      .chips:empty {
+        display: none;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: flex-start;
+        gap: 8px;
+        max-width: 100%;
+        padding: 6px 12px;
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--ink-2);
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow-wrap: anywhere;
+      }
+      .chip::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        flex: none;
+        margin-top: 7px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+
+      /* --- the queries that were run --------------------------------- */
+      .queries {
+        margin: 0 0 10px;
+        padding: 0;
+        list-style: none;
+        font: 12px/1.7 var(--mono);
+        color: var(--ink-3);
+      }
+      .queries li {
+        overflow-wrap: anywhere;
+      }
+      .queries li::before {
+        content: "searched ";
+        color: var(--line-strong);
+      }
+
+      /* --- prose ----------------------------------------------------- */
+      .prose > :first-child {
+        margin-top: 0;
+      }
+      .prose > :last-child {
+        margin-bottom: 0;
+      }
+      .prose p {
+        margin: 0 0 12px;
+      }
+      .prose h1,
+      .prose h2,
+      .prose h3,
+      .prose h4 {
+        margin: 22px 0 8px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        line-height: 1.3;
+      }
+      .prose h1 {
+        font-size: 1.3em;
+      }
+      .prose h2 {
+        font-size: 1.18em;
+      }
+      .prose h3 {
+        font-size: 1.06em;
+      }
+      .prose h4 {
+        font-size: 1em;
+        color: var(--ink-2);
+      }
+      .prose ul,
+      .prose ol {
+        margin: 0 0 12px;
+        padding-left: 1.35em;
+      }
+      .prose li {
+        margin-bottom: 4px;
+      }
+      .prose li > ul,
+      .prose li > ol {
+        margin-top: 4px;
+      }
+      .prose a {
+        color: var(--accent);
+        text-decoration: underline;
+        text-decoration-thickness: 1px;
+        text-underline-offset: 2px;
+        overflow-wrap: anywhere;
+      }
+      .prose a:hover {
+        text-decoration-thickness: 2px;
+      }
+      .prose code {
+        font: 0.88em/1.5 var(--mono);
+        padding: 1px 5px;
+        background: var(--surface-2);
+        border-radius: 5px;
+      }
+      .prose pre.code {
+        margin: 0 0 12px;
+        padding: 12px 14px;
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        overflow-x: auto;
+      }
+      .prose pre.code code {
+        background: none;
+        padding: 0;
+      }
+      .prose blockquote {
+        margin: 0 0 12px;
+        padding: 0 0 0 14px;
+        border-left: 2px solid var(--line-strong);
+        color: var(--ink-2);
+      }
+      .prose hr {
+        margin: 20px 0;
+        border: 0;
+        border-top: 1px solid var(--line);
+      }
+
+      /* --- verdict table --------------------------------------------- */
+      .table-wrap {
+        margin: 0 0 14px;
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+      }
+      .prose table {
+        width: 100%;
+        /* Fixed layout keeps the columns even: the browser gives a long first
+           column everything it wants otherwise, and squeezes the rest. */
+        table-layout: fixed;
+        min-width: 26rem;
+        border-collapse: collapse;
+        font-size: 15px;
+      }
+      .prose th,
+      .prose td {
+        padding: 9px 12px;
+        text-align: left;
+        vertical-align: top;
+        border-bottom: 1px solid var(--line);
+      }
+      .prose thead th {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--ink-2);
+        background: var(--surface-2);
+        white-space: nowrap;
+      }
+      .prose tbody tr:last-child td {
+        border-bottom: 0;
+      }
+      .prose .ta-center {
+        text-align: center;
+      }
+      .prose .ta-right {
+        text-align: right;
+      }
+      /* The verdict carries a word, never colour alone. */
+      .verdict {
+        white-space: nowrap;
+        font-weight: 500;
+      }
+      /* The model may or may not bold the word; the cell decides, not the model. */
+      .prose .verdict strong {
+        font-weight: inherit;
+      }
+      .verdict::before {
+        content: "";
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        margin-right: 7px;
+        border-radius: 2px;
+        background: var(--mute);
+        vertical-align: 1px;
+      }
+      .verdict-changed::before {
+        background: var(--changed);
+      }
+      .verdict-same::before {
+        background: var(--same);
+      }
+
+      /* --- sources --------------------------------------------------- */
+      .sources {
+        list-style: none;
+        counter-reset: src;
+        margin: 14px 0 0;
+        padding: 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 16px;
+      }
+      .sources li {
+        counter-increment: src;
+        display: flex;
+        align-items: baseline;
+        gap: 7px;
+        max-width: 100%;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .sources li::before {
+        content: counter(src);
+        font: 12px/1 var(--mono);
+        color: var(--ink-3);
+        font-variant-numeric: tabular-nums;
+      }
+      .sources a {
+        color: var(--ink-2);
+        text-decoration: underline;
+        text-decoration-color: var(--line-strong);
+        text-underline-offset: 2px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 34ch;
+      }
+      .sources a:hover {
+        color: var(--accent);
+        text-decoration-color: currentColor;
+      }
+      .src-date {
+        font: 12px/1 var(--mono);
+        color: var(--ink-3);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+
+      /* --- notices and errors ----------------------------------------- */
+      .notice {
+        margin: 12px 0 0;
+        padding: 12px 14px;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        font-size: 14px;
+      }
+      .notice-title {
+        margin: 0 0 4px;
+        font-weight: 500;
+        color: var(--ink);
+      }
+      .notice-body {
+        margin: 0;
+        color: var(--ink-2);
+      }
+      .notice .btn {
+        margin-top: 10px;
+      }
+      .notice-error {
+        border-color: color-mix(in srgb, var(--changed) 45%, var(--line-strong));
+      }
+      .notice-error .notice-title {
+        color: var(--changed);
+      }
+
+      .note {
+        margin: 10px 0 0;
+        font-size: 13px;
+        color: var(--ink-3);
+      }
+
+      /* --- empty state ------------------------------------------------ */
+      .empty {
+        padding: 8px 0 24px;
+      }
+      .empty h2 {
+        margin: 0 0 6px;
+        font-size: 21px;
+        font-weight: 500;
+        letter-spacing: -0.015em;
+      }
+      .empty p {
+        margin: 0 0 20px;
+        max-width: 52ch;
+        color: var(--ink-2);
+      }
+      .examples {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        border-top: 1px solid var(--line);
+      }
+      .examples li {
+        border-bottom: 1px solid var(--line);
+      }
+      .examples button {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        width: 100%;
+        padding: 13px 4px;
+        background: none;
+        border: 0;
+        text-align: left;
+        font: 400 15px/1.5 var(--sans);
+        color: var(--ink);
+        cursor: pointer;
+        transition: color 120ms var(--ease);
+      }
+      .examples button::after {
+        content: "→";
+        margin-left: auto;
+        color: var(--ink-3);
+        transition: transform 120ms var(--ease);
+      }
+      .examples button:hover {
+        color: var(--accent);
+      }
+      .examples button:hover::after {
+        transform: translateX(3px);
+      }
+
+      /* --- composer --------------------------------------------------- */
+      .composer {
+        border-top: 1px solid var(--line);
+        background: var(--bg);
+        padding: 12px 20px calc(12px + env(safe-area-inset-bottom));
+      }
+      .composer form {
+        max-width: var(--col);
+        margin: 0 auto;
+        display: flex;
+        align-items: flex-end;
+        gap: 10px;
+      }
+      .composer textarea {
+        flex: 1;
+        min-width: 0;
+        resize: none;
+        max-height: 200px;
+        padding: 11px 13px;
+        font: 400 16px/1.5 var(--sans);
+        color: var(--ink);
+        background: var(--surface);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        caret-color: var(--accent);
+      }
+      .composer textarea::placeholder {
+        color: var(--ink-3);
+      }
+      .composer-actions {
+        display: flex;
+        gap: 8px;
+        flex: none;
+      }
+      .composer .btn {
+        height: 44px;
+      }
+      .composer-hint {
+        max-width: var(--col);
+        margin: 8px auto 0;
+        font-size: 13px;
+        color: var(--ink-3);
+        min-height: 1.2em;
+      }
+      .composer-hint[data-kind="error"] {
+        color: var(--changed);
+      }
+
+      /* --- motion ------------------------------------------------------ */
+      @media (prefers-reduced-motion: no-preference) {
+        .chip {
+          animation: chip-in 160ms var(--ease) both;
+        }
+        .turn-assistant .turn-body {
+          animation: rise 200ms var(--ease) both;
+        }
+      }
+      @keyframes chip-in {
+        from {
+          opacity: 0;
+          transform: translateY(3px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(4px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+
+      /* --- narrow screens ---------------------------------------------- */
+      @media (max-width: 640px) {
+        .topbar {
+          flex-wrap: wrap;
+          row-gap: 10px;
+          padding: 10px 14px;
+        }
+        .topbar-right {
+          width: 100%;
+          margin-left: 0;
+          justify-content: space-between;
+        }
+        .col {
+          padding: 18px 14px 4px;
+        }
+        .composer {
+          padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+        }
+        .composer form {
+          flex-wrap: wrap;
+        }
+        .composer textarea {
+          flex-basis: 100%;
+        }
+        .composer-actions {
+          width: 100%;
+          justify-content: flex-end;
+        }
+        .empty h2 {
+          font-size: 19px;
+        }
+        .prose table {
+          font-size: 14px;
+        }
+        .prose th,
+        .prose td {
+          padding: 8px 10px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip" href="#log">Skip to conversation</a>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+            <path
+              d="M6.5 3.5H5a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h1.5M13.5 3.5H15a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1h-1.5"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+            />
+            <circle cx="10" cy="10" r="2.25" fill="currentColor" />
+          </svg>
+        </span>
+        <h1>minimi</h1>
+      </div>
+
+      <div class="topbar-right">
+        <div class="tz-field">
+          <label for="tz">Timezone</label>
+          <input
+            id="tz"
+            type="text"
+            list="tz-options"
+            spellcheck="false"
+            autocomplete="off"
+            aria-describedby="composer-hint"
+          />
+          <datalist id="tz-options">
+            <option value="Asia/Kolkata"></option>
+            <option value="Asia/Singapore"></option>
+            <option value="Asia/Tokyo"></option>
+            <option value="Europe/London"></option>
+            <option value="Europe/Berlin"></option>
+            <option value="America/New_York"></option>
+            <option value="America/Los_Angeles"></option>
+            <option value="Australia/Sydney"></option>
+            <option value="UTC"></option>
+          </datalist>
+        </div>
+        <button type="button" id="new-chat" class="btn btn-quiet">New chat</button>
+      </div>
+    </header>
+
+    <main id="log" tabindex="-1" aria-label="Conversation">
+      <div class="col" id="col"></div>
+    </main>
+
+    <div class="composer">
+      <form id="form" novalidate>
+        <label class="sr-only" for="input">Message minimi</label>
+        <textarea
+          id="input"
+          rows="1"
+          placeholder="Ask anything"
+          aria-describedby="composer-hint"
+        ></textarea>
+        <div class="composer-actions">
+          <button type="button" id="stop" class="btn btn-quiet" hidden>Stop</button>
+          <button type="submit" id="send" class="btn btn-primary">Send</button>
+        </div>
+      </form>
+      <p id="composer-hint" class="composer-hint"></p>
+    </div>
+
+    <script>
+      'use strict';
+
+      /* ==================================================================
+         Markdown
+         A small renderer: enough for what the model writes, and safe.
+         Everything is escaped first, so model output can never inject
+         markup, and link targets are restricted to http(s) and mailto.
+         ================================================================== */
+      var ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, function (c) {
+          return ESCAPES[c];
+        });
+      }
+
+      /** Returns a usable href, or null when the target must not be linked. */
+      function safeUrl(raw) {
+        var t = String(raw).trim();
+        if (/^https?:\/\//i.test(t)) return t;
+        if (/^mailto:[^\s@]+@[^\s@]+$/i.test(t)) return t;
+        return null;
+      }
+
+      function link(href, text) {
+        return (
+          '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + text + '</a>'
+        );
+      }
+
+      /** Inline markdown inside one already-split text run. */
+      function renderText(src) {
+        var s = escapeHtml(src);
+
+        // [label](target) — an unusable target degrades to plain text.
+        s = s.replace(
+          /\[([^\]\n]*)\]\(([^)\s]+)(?:\s+&quot;[^)]*&quot;)?\)/g,
+          function (m, label, target) {
+            var href = safeUrl(target);
+            var text = label || target;
+            return href ? link(href, text) : text;
+          },
+        );
+
+        // Bare links.
+        s = s.replace(
+          /(^|[\s(])(https?:\/\/[^\s<>"']+)/g,
+          function (m, pre, url) {
+            return pre + link(url, url);
+          },
+        );
+
+        s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+        s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+        s = s.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+
+        return s;
+      }
+
+      /**
+       * Inline markdown for a whole line. Code spans are split out first, so
+       * their contents never see the other replacements.
+       */
+      function renderInline(src) {
+        return String(src)
+          .split(/(`[^`\n]+`)/g)
+          .map(function (part) {
+            if (part.length > 2 && part.charAt(0) === '`' && part.charAt(part.length - 1) === '`') {
+              return '<code>' + escapeHtml(part.slice(1, -1)) + '</code>';
+            }
+            return renderText(part);
+          })
+          .join('');
+      }
+
+      var BLOCK_START = /^\s*(#{1,4}\s|```|>|\||[-*+]\s|\d+[.)]\s)/;
+
+      function splitRow(row) {
+        return row
+          .trim()
+          .replace(/^\|/, '')
+          .replace(/\|$/, '')
+          .split('|')
+          .map(function (c) {
+            return c.trim();
+          });
+      }
+
+      function alignOf(cell) {
+        var left = cell.charAt(0) === ':';
+        var right = cell.charAt(cell.length - 1) === ':';
+        if (left && right) return 'ta-center';
+        if (right) return 'ta-right';
+        if (left) return 'ta-left';
+        return '';
+      }
+
+      function renderTable(head, align, rows) {
+        var th = head
+          .map(function (c, i) {
+            return (
+              '<th' + (align[i] ? ' class="' + align[i] + '"' : '') + '>' + renderInline(c) + '</th>'
+            );
+          })
+          .join('');
+        var body = rows
+          .map(function (r) {
+            return (
+              '<tr>' +
+              r
+                .map(function (c, i) {
+                  return (
+                    '<td' + (align[i] ? ' class="' + align[i] + '"' : '') + '>' + renderInline(c) + '</td>'
+                  );
+                })
+                .join('') +
+              '</tr>'
+            );
+          })
+          .join('');
+        return (
+          '<div class="table-wrap"><table><thead><tr>' +
+          th +
+          '</tr></thead><tbody>' +
+          body +
+          '</tbody></table></div>'
+        );
+      }
+
+      function renderList(items, ordered) {
+        var tag = ordered ? 'ol' : 'ul';
+        var html = '';
+        var i = 0;
+        while (i < items.length) {
+          var base = items[i].indent;
+          var group = [];
+          while (i < items.length && items[i].indent === base) group.push(items[i++]);
+          var nested = [];
+          while (i < items.length && items[i].indent > base) nested.push(items[i++]);
+          var nestedHtml = nested.length ? renderList(nested, false) : '';
+          group.forEach(function (item, idx) {
+            html +=
+              '<li>' +
+              renderInline(item.text) +
+              (nestedHtml && idx === group.length - 1 ? nestedHtml : '') +
+              '</li>';
+          });
+        }
+        return '<' + tag + '>' + html + '</' + tag + '>';
+      }
+
+      function renderMarkdown(src) {
+        var lines = String(src).replace(/\r\n?/g, '\n').split('\n');
+        var out = [];
+        var i = 0;
+
+        while (i < lines.length) {
+          var line = lines[i];
+
+          if (/^\s*```/.test(line)) {
+            var buf = [];
+            i++;
+            while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++]);
+            i++;
+            out.push('<pre class="code"><code>' + escapeHtml(buf.join('\n')) + '</code></pre>');
+            continue;
+          }
+
+          // A GFM table: a header row, a delimiter row, then body rows.
+          if (
+            /^\s*\|/.test(line) &&
+            i + 1 < lines.length &&
+            /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(lines[i + 1]) &&
+            lines[i + 1].indexOf('-') !== -1
+          ) {
+            var head = splitRow(line);
+            var align = splitRow(lines[i + 1]).map(alignOf);
+            i += 2;
+            var rows = [];
+            while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(splitRow(lines[i++]));
+            out.push(renderTable(head, align, rows));
+            continue;
+          }
+
+          var heading = /^(#{1,4})\s+(.*)$/.exec(line);
+          if (heading) {
+            var level = Math.min(heading[1].length + 1, 5);
+            out.push('<h' + level + '>' + renderInline(heading[2]) + '</h' + level + '>');
+            i++;
+            continue;
+          }
+
+          if (/^\s*([-*_])\s*(\1\s*){2,}$/.test(line)) {
+            out.push('<hr />');
+            i++;
+            continue;
+          }
+
+          if (/^\s*>/.test(line)) {
+            var quoted = [];
+            while (i < lines.length && /^\s*>/.test(lines[i])) {
+              quoted.push(lines[i++].replace(/^\s*>\s?/, ''));
+            }
+            out.push('<blockquote>' + renderMarkdown(quoted.join('\n')) + '</blockquote>');
+            continue;
+          }
+
+          if (/^\s*([-*+]|\d+[.)])\s+/.test(line)) {
+            var ordered = /^\s*\d+[.)]\s+/.test(line);
+            var items = [];
+            while (i < lines.length) {
+              var m = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(lines[i]);
+              if (!m) break;
+              items.push({ indent: m[1].length, text: m[3] });
+              i++;
+            }
+            out.push(renderList(items, ordered));
+            continue;
+          }
+
+          if (!line.trim()) {
+            i++;
+            continue;
+          }
+
+          var para = [];
+          while (i < lines.length && lines[i].trim() && !BLOCK_START.test(lines[i])) {
+            para.push(lines[i++]);
+          }
+          if (para.length) {
+            out.push('<p>' + renderInline(para.join('\n')).replace(/\n/g, '<br />') + '</p>');
+          } else {
+            i++;
+          }
+        }
+
+        return out.join('\n');
+      }
+
+      /** The verdict column is a word plus a mark, never colour on its own. */
+      function decorateVerdicts(container) {
+        var cells = container.querySelectorAll('td');
+        for (var i = 0; i < cells.length; i++) {
+          var cell = cells[i];
+          var text = cell.textContent.trim().toLowerCase();
+          if (!text) continue;
+          if (text.indexOf('changed') === 0) {
+            cell.classList.add('verdict', 'verdict-changed');
+          } else if (text.indexOf('unchanged') === 0) {
+            cell.classList.add('verdict', 'verdict-same');
+          } else if (text.indexOf('could not verify') === 0) {
+            cell.classList.add('verdict');
+          }
+        }
+      }
+
+      /* ==================================================================
+         State
+         ================================================================== */
+      var log = document.getElementById('log');
+      var col = document.getElementById('col');
+      var form = document.getElementById('form');
+      var input = document.getElementById('input');
+      var sendBtn = document.getElementById('send');
+      var stopBtn = document.getElementById('stop');
+      var newChatBtn = document.getElementById('new-chat');
+      var tzInput = document.getElementById('tz');
+      var hint = document.getElementById('composer-hint');
+
+      var SESSION_KEY = 'minimi.session';
+      var TZ_KEY = 'minimi.tz';
+
+      var sessionId = localStorage.getItem(SESSION_KEY);
+      if (!sessionId) {
+        sessionId = crypto.randomUUID();
+        localStorage.setItem(SESSION_KEY, sessionId);
+      }
+
+      var timezone = localStorage.getItem(TZ_KEY) || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (!isValidTimezone(timezone)) timezone = 'UTC';
+      tzInput.value = timezone;
+
+      var controller = null;
+      var lastMessage = '';
+      var busy = false;
+
+      var EXAMPLES = [
+        "What's the latest stable Node.js version?",
+        'Compare Neon and Railway for Postgres hosting for a small team. What do they each cost?',
+        'Has any pricing changed since last Tuesday?',
+      ];
+
+      /* ==================================================================
+         Small helpers
+         ================================================================== */
+      function isValidTimezone(tz) {
+        try {
+          new Intl.DateTimeFormat('en-US', { timeZone: tz });
+          return true;
+        } catch (err) {
+          return false;
+        }
+      }
+
+      function localDay(iso) {
+        try {
+          return new Intl.DateTimeFormat('en-CA', {
+            timeZone: timezone,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          }).format(new Date(iso));
+        } catch (err) {
+          return '';
+        }
+      }
+
+      function nearBottom() {
+        return log.scrollHeight - log.scrollTop - log.clientHeight < 120;
+      }
+
+      function scrollToEnd(force) {
+        if (force || nearBottom()) log.scrollTop = log.scrollHeight;
+      }
+
+      function setHint(text, kind) {
+        hint.textContent = text || '';
+        if (kind) hint.setAttribute('data-kind', kind);
+        else hint.removeAttribute('data-kind');
+      }
+
+      function updateSend() {
+        var empty = input.value.trim().length === 0;
+        sendBtn.setAttribute('aria-disabled', busy || empty ? 'true' : 'false');
+      }
+
+      function setBusy(state) {
+        busy = state;
+        stopBtn.hidden = !state;
+        updateSend();
+      }
+
+      /* ==================================================================
+         Rendering
+         ================================================================== */
+      function renderEmptyState() {
+        var wrap = document.createElement('div');
+        wrap.className = 'empty';
+
+        var heading = document.createElement('h2');
+        heading.textContent = 'Ask minimi to look something up';
+        wrap.appendChild(heading);
+
+        var lead = document.createElement('p');
+        lead.textContent =
+          'It searches the web, remembers every answer with the date it was given, and can re-check an old answer against today’s pages.';
+        wrap.appendChild(lead);
+
+        var list = document.createElement('ul');
+        list.className = 'examples';
+        EXAMPLES.forEach(function (prompt) {
+          var li = document.createElement('li');
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = prompt;
+          btn.addEventListener('click', function () {
+            input.value = prompt;
+            updateSend();
+            input.focus();
+            form.requestSubmit();
+          });
+          li.appendChild(btn);
+          list.appendChild(li);
+        });
+        wrap.appendChild(list);
+        col.appendChild(wrap);
+      }
+
+      function renderTurn(role, text, ts, sources) {
+        var article = document.createElement('article');
+        article.className = 'turn turn-' + role;
+
+        var head = document.createElement('div');
+        head.className = 'turn-head';
+
+        var who = document.createElement('span');
+        who.className = 'who';
+        who.textContent = role === 'user' ? 'You' : 'minimi';
+        head.appendChild(who);
+
+        if (ts) {
+          var when = document.createElement('time');
+          when.className = 'when';
+          when.dateTime = ts;
+          when.textContent = localDay(ts);
+          head.appendChild(when);
+        }
+        article.appendChild(head);
+
+        var body = document.createElement('div');
+        body.className = 'turn-body prose';
+        if (role === 'user') {
+          body.textContent = text;
+        } else {
+          body.innerHTML = renderMarkdown(text);
+          decorateVerdicts(body);
+        }
+        article.appendChild(body);
+
+        if (sources && sources.length) {
+          article.appendChild(renderSources(sources));
+        }
+
+        col.appendChild(article);
+        return article;
+      }
+
+      function renderSources(list) {
+        var ol = document.createElement('ol');
+        ol.className = 'sources';
+        list.forEach(function (s) {
+          var li = document.createElement('li');
+          var href = safeUrl(s.url);
+          if (href) {
+            var a = document.createElement('a');
+            a.href = href;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = s.title || s.url;
+            li.appendChild(a);
+          } else {
+            var span = document.createElement('span');
+            span.textContent = s.title || s.url;
+            li.appendChild(span);
+          }
+          if (s.publishedDate) {
+            var date = document.createElement('time');
+            date.className = 'src-date';
+            date.dateTime = s.publishedDate;
+            date.textContent = s.publishedDate;
+            li.appendChild(date);
+          }
+          ol.appendChild(li);
+        });
+        return ol;
+      }
+
+      function renderNotice(title, body, retry) {
+        var box = document.createElement('div');
+        box.className = 'notice notice-error';
+        box.setAttribute('role', 'alert');
+
+        var h = document.createElement('p');
+        h.className = 'notice-title';
+        h.textContent = title;
+        box.appendChild(h);
+
+        var p = document.createElement('p');
+        p.className = 'notice-body';
+        p.textContent = body;
+        box.appendChild(p);
+
+        if (retry) {
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn btn-quiet';
+          btn.textContent = 'Try again';
+          btn.addEventListener('click', function () {
+            box.remove();
+            send(lastMessage);
+          });
+          box.appendChild(btn);
+        }
+        return box;
+      }
+
+      /* ==================================================================
+         Conversation
+         ================================================================== */
+      function loadHistory() {
+        return fetch('/api/sessions/' + encodeURIComponent(sessionId))
+          .then(function (res) {
+            if (!res.ok) throw new Error('history unavailable');
+            return res.json();
+          })
+          .then(function (data) {
+            var turns = data && Array.isArray(data.turns) ? data.turns : [];
+            if (!turns.length) {
+              renderEmptyState();
+              return;
+            }
+            turns.forEach(function (turn) {
+              renderTurn(
+                turn.role === 'user' ? 'user' : 'assistant',
+                turn.text,
+                turn.ts,
+                turn.sources,
+              );
+            });
+            scrollToEnd(true);
+          })
+          .catch(function () {
+            renderEmptyState();
+          });
+      }
+
+      function clearConversation() {
+        col.textContent = '';
+        renderEmptyState();
+      }
+
+      function send(message) {
+        var text = String(message || '').trim();
+        if (!text || busy) return;
+
+        lastMessage = text;
+        var empty = col.querySelector('.empty');
+        if (empty) empty.remove();
+
+        renderTurn('user', text, new Date().toISOString());
+        input.value = '';
+        growInput();
+        updateSend();
+        scrollToEnd(true);
+
+        var article = renderTurn('assistant', '', new Date().toISOString());
+        var chips = document.createElement('div');
+        chips.className = 'chips';
+        chips.setAttribute('role', 'status');
+        article.appendChild(chips);
+
+        var queryBox = document.createElement('ul');
+        queryBox.className = 'queries';
+        article.appendChild(queryBox);
+
+        var body = article.querySelector('.turn-body');
+        body.setAttribute('aria-live', 'polite');
+        body.setAttribute('aria-atomic', 'true');
+        body.setAttribute('aria-busy', 'true');
+
+        var sourcesBox = document.createElement('div');
+        article.appendChild(sourcesBox);
+
+        controller = new AbortController();
+        setBusy(true);
+        setHint('');
+
+        var answer = '';
+        var frame = null;
+        var pendingRender = false;
+
+        function paint() {
+          frame = null;
+          if (!pendingRender) return;
+          pendingRender = false;
+          body.innerHTML = renderMarkdown(answer);
+          decorateVerdicts(body);
+          scrollToEnd(false);
+        }
+        function schedule() {
+          pendingRender = true;
+          if (frame === null) frame = requestAnimationFrame(paint);
+        }
+
+        function addChip(text) {
+          var chip = document.createElement('span');
+          chip.className = 'chip';
+          chip.textContent = text;
+          chip.title = text;
+          chips.appendChild(chip);
+        }
+
+        function addQuery(query) {
+          var li = document.createElement('li');
+          li.textContent = query;
+          queryBox.appendChild(li);
+        }
+
+        fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ message: text, sessionId: sessionId, timezone: timezone }),
+          signal: controller.signal,
+        })
+          .then(function (res) {
+            if (!res.ok) {
+              return res
+                .json()
+                .catch(function () {
+                  return null;
+                })
+                .then(function (payload) {
+                  var detail =
+                    payload && payload.error
+                      ? payload.error
+                      : 'The server could not complete the request.';
+                  article.appendChild(
+                    renderNotice('The request could not be completed', detail, true),
+                  );
+                  body.setAttribute('aria-busy', 'false');
+                  return null;
+                });
+            }
+
+            var reader = res.body.getReader();
+            var decoder = new TextDecoder();
+            var buffer = '';
+
+            function pump() {
+              return reader.read().then(function (chunk) {
+                if (chunk.done) return null;
+                buffer += decoder.decode(chunk.value, { stream: true });
+                var frames = buffer.split('\n\n');
+                buffer = frames.pop() || '';
+
+                frames.forEach(function (frameText) {
+                  if (!frameText.trim()) return;
+                  var nameMatch = /^event:\s*(\w+)/m.exec(frameText);
+                  var dataMatch = /^data:\s*(.*)$/m.exec(frameText);
+                  if (!nameMatch || !dataMatch) return;
+                  var payload;
+                  try {
+                    payload = JSON.parse(dataMatch[1]);
+                  } catch (err) {
+                    return;
+                  }
+                  var event = nameMatch[1];
+
+                  if (event === 'delta') {
+                    // The answer replaces the progress chips.
+                    if (!answer) chips.textContent = '';
+                    answer += payload.text || '';
+                    schedule();
+                  } else if (event === 'status') {
+                    addChip(payload.message || '');
+                  } else if (event === 'tool') {
+                    if (payload.args && payload.args.query) addQuery(payload.args.query);
+                  } else if (event === 'sources') {
+                    sourcesBox.textContent = '';
+                    sourcesBox.appendChild(renderSources(payload.sources || []));
+                  } else if (event === 'error') {
+                    article.appendChild(
+                      renderNotice(
+                        'The search could not be completed',
+                        payload.message || 'Try the question again.',
+                        true,
+                      ),
+                    );
+                  }
+                });
+
+                return pump();
+              });
+            }
+
+            return pump();
+          })
+          .then(function () {
+            if (answer) {
+              body.innerHTML = renderMarkdown(answer);
+              decorateVerdicts(body);
+            } else if (!article.querySelector('.notice')) {
+              body.innerHTML = '<p>No answer came back. Ask again to try.</p>';
+            }
+            body.setAttribute('aria-busy', 'false');
+          })
+          .catch(function (err) {
+            if (err && err.name === 'AbortError') {
+              if (answer) {
+                body.innerHTML = renderMarkdown(answer);
+                decorateVerdicts(body);
+                var note = document.createElement('p');
+                note.className = 'note';
+                note.textContent = 'Stopped.';
+                article.appendChild(note);
+              } else {
+                body.innerHTML = '<p>Stopped before anything was answered.</p>';
+              }
+              body.setAttribute('aria-busy', 'false');
+            } else {
+              article.appendChild(
+                renderNotice(
+                  'Could not reach minimi',
+                  'The server did not respond. Check that it is running, then try again.',
+                  true,
+                ),
+              );
+              body.setAttribute('aria-busy', 'false');
+            }
+          })
+          .then(function () {
+            if (frame !== null) {
+              cancelAnimationFrame(frame);
+              paint();
+            }
+            controller = null;
+            setBusy(false);
+            scrollToEnd(false);
+          });
+      }
+
+      /* ==================================================================
+         Composer behaviour
+         ================================================================== */
+      function growInput() {
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+      }
+
+      input.addEventListener('input', function () {
+        growInput();
+        updateSend();
+      });
+
+      // Enter sends on a pointer device; on touch it must insert a newline.
+      var finePointer = window.matchMedia('(pointer: fine)');
+      input.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' || e.shiftKey || !finePointer.matches) return;
+        e.preventDefault();
+        form.requestSubmit();
+      });
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        if (busy) return;
+        if (!input.value.trim()) {
+          input.focus();
+          return;
+        }
+        send(input.value);
+      });
+
+      stopBtn.addEventListener('click', function () {
+        if (controller) controller.abort();
+        input.focus();
+      });
+
+      newChatBtn.addEventListener('click', function () {
+        sessionId = crypto.randomUUID();
+        localStorage.setItem(SESSION_KEY, sessionId);
+        clearConversation();
+        input.focus();
+        scrollToEnd(true);
+      });
+
+      tzInput.addEventListener('change', function () {
+        var value = tzInput.value.trim();
+        if (!value || !isValidTimezone(value)) {
+          setHint('That is not a time zone. Use an IANA name such as Asia/Kolkata.', 'error');
+          tzInput.value = timezone;
+          return;
+        }
+        timezone = value;
+        localStorage.setItem(TZ_KEY, value);
+        setHint('');
+      });
+
+      /* ==================================================================
+         Start
+         ================================================================== */
+      growInput();
+      updateSend();
+      loadHistory();
+    </script>
+  </body>
+</html>
