@@ -471,6 +471,7 @@ export async function* runAgent(
   const request: LlmRequest = { system, turns, tools };
 
   let exhausted = false;
+  let synthesisRecovery = false;
   /** Set when the turn ran out of time rather than out of steps. */
   let outOfTime = false;
   const stepLimit = reverifyBlock ? 6 : MAX_STEPS;
@@ -478,7 +479,7 @@ export async function* runAgent(
     loopStep = step + 1;
     phase = 'loop';
     // Reserve the final normal step for synthesis instead of adding a fourth call.
-    if (!reverifyBlock && (step >= 1 || searchBudget.used >= searchBudget.allowance)) {
+    if (step === stepLimit - 1 || (!reverifyBlock && (step >= 1 || searchBudget.used >= searchBudget.allowance))) {
       request.tools = [];
       turns.push({ role: 'user', text: 'Stop searching and answer now using the supplied evidence. Do not call tools. Name the product in every factual claim and cite only source IDs [n], never URLs. If the excerpts do not establish the requested facts, say what could not be verified.' });
     }
@@ -511,8 +512,30 @@ export async function* runAgent(
         opaque = event.opaque;
       }
     }
-    if (!reverifyBlock && !request.tools?.length && toolCalls.length) {
-      throw new Error('The model requested another search after the final answer step.');
+    if (!request.tools?.length && toolCalls.length) {
+      if (!synthesisRecovery && step < stepLimit - 1) {
+        synthesisRecovery = true;
+        // Remove tool-call history that can prime another function call. The
+        // recovery consumes the reserved third step, never another search.
+        request.turns = [{ role: 'user', text: `Question: ${input.message}\nAnswer in text from these gathered results. Do not request tools. Cite source IDs [n].\n${JSON.stringify(sources.map(modelSource))}${reverifyBlock}` }];
+        continue;
+      }
+      // Even a provider that ignores NONE repeatedly must not leave silence.
+      if (!answer.trim()) {
+        const text = sources.length
+          ? sources.map((s) => `${s.title}: ${s.excerpt || 'No excerpt available.'} [${s.id}]`).join('\n\n')
+          : 'Unverified synthesis: no usable search evidence was retrieved, so I could not confirm an answer.';
+        if (ttft === null) ttft = Date.now() - startedAt;
+        answer += text;
+        yield { type: 'text', text };
+        yield { type: 'citations', checks: citationChecks() };
+      }
+      toolCalls = [];
+    }
+    if (synthesisRecovery && !toolCalls.length && answer.trim() && !/\[\d+(?:\s*,\s*\d+)*\]/.test(answer)) {
+      const label = '\n\nUnverified synthesis from the gathered results (no source citations).';
+      answer += label;
+      yield { type: 'text', text: label };
     }
 
     if (!toolCalls.length && !answer.trim()) {

@@ -451,3 +451,30 @@ async function testInterruptedAnswerIsRemembered() {
   } finally {await rm(join(config.dataDir,'sessions',`${sessionId}.jsonl`),{force:true});}
 }
 testInterruptedAnswerIsRemembered().catch((err)=>{console.error(err);process.exit(1);});
+
+async function testToolFreeRecovery() {
+  for (const mode of ['always', 'normal', 'recovered', 'uncited']) {
+    const alwaysCalls = mode !== 'normal';
+    const searchCall: LlmEvent = {type:'tool_calls',calls:[{name:'web_search',args:{query:'Node.js latest stable version'}}]};
+    const llm = new ScriptedLlm(alwaysCalls
+      ? [[searchCall],[searchCall],mode === 'always' ? [searchCall] : [{type:'text',text:mode === 'uncited' ? 'I could not confirm the version.' : 'Node.js version evidence [1].'}]]
+      : [[searchCall],[{type:'text',text:'Node.js version evidence [1].'}]]);
+    const store = new SessionStore(); await store.init();
+    const search = new FakeSearch(); const events = [];
+    for await (const e of runAgent({sessionId:`recovery-${mode}`,message:"What's the latest stable Node.js version?",timezone:'UTC'}, {llm,search,store})) events.push(e);
+    assert.equal(llm.calls.length, alwaysCalls ? 3 : 2);
+    assert.ok(llm.calls.slice(1).every(c=>!c.tools?.length));
+    assert.equal(events.filter(e=>e.type==='error').length,0);
+    assert.ok(events.some(e=>e.type==='text' && e.text.trim()));
+    assert.ok(events.some(e=>e.type==='sources' && e.sources.length));
+    const done = events.find(e=>e.type==='done')!;
+    assert.ok(done.metrics.step_count<=3);
+    assert.equal(done.metrics.search_rounds.length,1);
+    const text = events.filter(e=>e.type==='text').map(e=>e.text).join('');
+    if(mode === 'uncited') assert.match(text, /Unverified synthesis/);
+    if(mode === 'recovered') assert.doesNotMatch(text, /Unverified synthesis/);
+    if(alwaysCalls) assert.ok(llm.calls[2].turns.every(t=>!t.toolCalls && !t.toolResults));
+  }
+  console.log('tool-free recovery: persistent function calls yield cited text within 3 steps; normal search/answer takes 2 steps with sources');
+}
+testToolFreeRecovery().catch(err=>{console.error(err);process.exit(1);});
