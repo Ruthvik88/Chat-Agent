@@ -1,4 +1,4 @@
-# minimi
+# Chat-Agent
 
 A Node/TypeScript chat agent with one model tool: web search. Memory and date handling run in code.
 Read [DESIGN.md](./DESIGN.md) for the decisions, live measurements and remaining limitations.
