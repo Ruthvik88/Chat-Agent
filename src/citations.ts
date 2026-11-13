@@ -43,7 +43,7 @@ export function modelSource(source: Source) {
   let domain = source.domain ?? '';
   try { domain = new URL(source.url).hostname; } catch { /* invalid sources cannot become links */ }
   return { id: source.id, citation: `[${source.id}]`, title: withoutUrls(source.title), domain,
-    publishedDate: formatSourceDate(source.publishedDate), excerpt: withoutUrls(source.excerpt ?? '').slice(0, 500) };
+    publishedDate: formatSourceDate(source.publishedDate), official: !!source.official, dated: !!source.dated, excerpt: withoutUrls(source.excerpt ?? '').slice(0, 500) };
 }
 
 export function withoutUrls(text: string): string {
@@ -82,7 +82,8 @@ export function checkCitations(text: string, sources: Source[]): CitationCheck[]
       const claim = text.slice(start, offset).replace(/\*|`/g, '');
       const entities = entitiesIn(claim);
       const explicit = entities.filter((e) => e in aliases);
-      const targets = explicit.length ? explicit : /^[\s.*|,;:]*$/.test(claim) && previousTargets.length
+      const rowEntities = /^\s*\|/.test(line) ? entitiesIn(line.split('|')[1] ?? '').filter((e) => e in aliases) : [];
+      const targets = rowEntities.length ? rowEntities : explicit.length ? explicit : /^[\s.*|,;:]*$/.test(claim) && previousTargets.length
         ? previousTargets : headingEntities.length ? headingEntities : entities.length ? entities : previousTargets;
       previousTargets = targets;
       for (const id of match[1].split(',').map(Number)) {

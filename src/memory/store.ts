@@ -13,6 +13,7 @@ export interface Source {
   publishedDate?: string;
   score?: number;
   official?: boolean;
+  dated?: boolean;
 }
 
 export interface StoredTurn {

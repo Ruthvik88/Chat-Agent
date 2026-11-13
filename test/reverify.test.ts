@@ -126,8 +126,10 @@ async function main() {
   assert.equal(fresh.startDate, undefined, 'a freshness search must not carry a date window');
 
   // The queries the model asked for are the ones used.
-  assert.equal(windowed.query, 'Neon pricing per month');
-  assert.equal(fresh.query, 'Neon pricing change 2026');
+  assert.equal(windowed.query, "Neon serverless Postgres what's new since 2026-11-10 Neon pricing per month");
+  assert.equal(windowed.topic, 'news');
+  assert.equal(fresh.query, 'Neon serverless Postgres pricing');
+  assert.deepEqual(fresh.includeDomains, ['neon.tech']);
 
   // The claim carries its raw evidence for the answer step to judge.
   assert.equal(report.checks.length, 1);
@@ -342,14 +344,15 @@ async function testCrmRegressions() {
       assert.deepEqual(report.uncheckedClaims, count === 7 ? ['Insightly offers CRM software'] : []);
       const context = renderReverifyContext(report);
       if (count === 7) assert.match(context, /NOT checked \(search cap\):\n- Insightly offers CRM software/);
-      assert.match(context, /Unchanged when evidence restates the same value/);
-      assert.match(context, /Changed only when evidence states a different value AND is dated after the original answer/);
+      assert.match(context, /Unchanged ONLY when an OFFICIAL page excerpt states the same value/);
+      assert.match(context, /Changed only when an official page OR a source dated after the original answer/);
       assert.match(context, /Every price\/number anywhere.*numbered source citation/);
-      assert.match(context, /\[dated after original answer\].*\(11 Nov 2026\)/);
-      assert.match(context, /\[current page only; cannot establish changed since\].*\(12 Apr 2026\)/);
-      assert.match(context, /\[current page only; cannot establish changed since\].*\(undated\)/);
+      assert.match(context, /\[(?:OFFICIAL|background only); dated after original answer\].*\(11 Nov 2026\)/);
+      assert.match(context, /\[background only; current page only; cannot establish changed since\].*\(12 Apr 2026\)/);
+      assert.match(context, /\[background only; current page only; cannot establish changed since\].*\(undated\)/);
       assert.doesNotMatch(context, /Wed,|GMT|no date|\(unknown\)/);
       assert.ok(requests.some((r) => r.includeDomains?.[0] === 'pipedrive.com'));
+      assert.equal(report.checks.find((c) => c.subject === 'Pipedrive')?.assessment?.verdict, 'Unchanged');
     }
     console.log('CRM canned regressions: five covered; overflow disclosed; same-value verdict instructions; stale/undated evidence labelled; dates formatted; official search requested');
   } finally {

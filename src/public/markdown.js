@@ -259,7 +259,17 @@ export function renderCitedMarkdown(text, sources, checks) {
   replaced = replaced.replace(/\[([^\]]*)\]\([^\s)]+\)/g, '$1 **(unverified URL)**')
     .replace(/https?:\/\/[^\s<>]+/g, '**(unverified URL)**');
   // A rejected re-verify citation cannot leave a green Changed/Unchanged verdict.
-  replaced = replaced.split('\n').map(function (line) {
+  var rawLines = raw.split('\n');
+  var rowOffset = 0;
+  replaced = replaced.split('\n').map(function (line, index) {
+    var start = rowOffset;
+    rowOffset += rawLines[index].length + 1;
+    var rejectedVerdict = (checks || []).some(function (c) { return c.offset >= start && c.offset < rowOffset && c.reason === 'verdict lacks required official/value evidence'; });
+    if (rejectedVerdict && /^\s*\|/.test(line)) {
+      var rejectedCells = line.split('|');
+      if (/^\s*(Changed|Unchanged)\s*$/i.test(rejectedCells[2] || '')) rejectedCells[2] = ' Could not verify ';
+      return rejectedCells.join('|');
+    }
     if (!/^\s*\|/.test(line) || !/\*\*\[\d+\] unverified\*\*/.test(line)) return line;
     var cells = line.split('|');
     if (/^\s*(Changed|Unchanged|Could not verify)\s*$/i.test(cells[2] || '')) cells[2] = ' Unverified ';
@@ -293,6 +303,8 @@ export function renderSourcesHtml(sources) {
       } else {
         body += ' <span class="src-date">undated</span>';
       }
+      if (s.dated) body += ' <strong class="src-date">dated (over 12 months old)</strong>';
+      if (s.official) body += ' <span class="src-date">official</span>';
       return '<li data-source-id="' + escapeHtml(s.id || '') + '">' + body + '</li>';
     })
     .join('');

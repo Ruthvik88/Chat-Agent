@@ -107,9 +107,9 @@ async function main() {
   }
 
   // Two searches ran, in parallel, with the resolved date filter.
-  assert.equal(search.seen.length, 2, 'expected two searches');
+  assert.equal(search.seen.length, 4, 'two general and two official searches');
   assert.deepEqual(
-    search.seen.map((s) => s.startDate),
+    search.seen.filter((s) => !s.includeDomains).map((s) => s.startDate),
     ['2026-11-09', '2026-11-09'],
     'searches must carry the resolved Monday date',
   );
@@ -160,16 +160,16 @@ async function testStepExhaustion() {
   }
 
   // Three normal steps: at most two search rounds, then synthesis without tools.
-  assert.equal(search.seen.length, 2, `expected 2 searches, got ${search.seen.length}`);
+  assert.equal(search.seen.length, 1, 'one search round before synthesis');
   const done = events.find((e) => e.type === 'done');
   assert.ok(done?.type === 'done');
-  assert.equal(done.metrics.step_count, 3);
+  assert.equal(done.metrics.step_count, 2);
 
   // The final call must drop the tools so the model cannot loop again.
   const last = llm.calls[llm.calls.length - 1];
   assert.equal(last.tools?.length, 0, 'the final call must not offer tools');
-  const synthesis = llm.calls[2];
-  assert.equal(synthesis.tools?.length, 0, 'third loop step disables tools');
+  const synthesis = llm.calls[1];
+  assert.equal(synthesis.tools?.length, 0, 'second loop step disables tools');
   assert.match(synthesis.turns.at(-1)!.text!, /Stop searching and answer now/);
 
   // And there must be an answer, not an empty stream.
@@ -311,13 +311,13 @@ async function testRankedParallelSourcesAndFollowup() {
     assert.equal(sourceEvent.sources.length, 6);
     assert.equal(sourceEvent.sources[0].url, 'https://neon.tech/pricing', 'official wins despite lower score and slower search');
     assert.equal(store.get(sessionId).at(-1)!.sources!.length, 6);
-    const followup = new ScriptedLlm([[{ type: 'text', text: 'Neon pricing [1].' }]]);
+    const followup = new ScriptedLlm([[{ type: 'tool_calls', calls: [{ name: 'web_search', args: { query: 'Neon serverless Postgres pricing' } }] }], [{ type: 'text', text: 'Neon pricing [1].' }]]);
     const followEvents = [];
     for await (const e of runAgent({ sessionId, message: 'and the other one?', timezone: 'Asia/Kolkata' }, { store, llm: followup, search })) followEvents.push(e);
     const req = followup.calls[0];
     assert.match(req.system, /Every factual claim needs a numbered citation/);
     assert.match(req.system, /Railway PaaS Postgres pricing/);
-    assert.match(req.turns.at(-1)!.text!, /Numbered evidence.*\n.*neon.tech/);
+    assert.ok(followup.calls[1].turns.some((t) => t.toolResults?.some((r) => r.output.includes('neon.tech'))), 'follow-up receives fresh official evidence');
     assert.ok(req.turns.filter((t) => t.role === 'assistant').every((t) => !/\[1, 2\]/.test(t.text ?? '')), 'old grouped IDs must not be rebound to the new turn');
     assert.ok(followEvents.some((e) => e.type === 'sources' && e.sources.some((s) => s.url === 'https://neon.tech/pricing')));
     console.log('parallel source ranking/cap/dedupe and follow-up citation context: all assertions passed');

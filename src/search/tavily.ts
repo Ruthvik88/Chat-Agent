@@ -1,3 +1,4 @@
+import { officialProducts, onOfficialDomain } from './official';
 import { rankSources } from './results';
 import { config } from '../config';
 import { SearchError, type SearchProvider, type SearchRequest, type SearchResult } from './types';
@@ -73,20 +74,16 @@ export class TavilySearchProvider implements SearchProvider {
       }>;
     };
 
+    const officialDomains = [...(req.includeDomains ?? []), ...officialProducts(req.query).map((p) => p.domain)];
     return rankSources((json.results ?? [])
-      .filter((r) => typeof r.score === 'number' && Number.isFinite(r.score) && r.score >= MIN_RELEVANCE_SCORE && r.url)
+      .filter((r) => r.url && (onOfficialDomain(r.url, officialDomains) || (typeof r.score === 'number' && Number.isFinite(r.score) && r.score >= MIN_RELEVANCE_SCORE)))
       .map((r) => ({
         title: r.title ?? '',
         url: r.url ?? '',
         content: (r.content ?? '').slice(0, 500),
         publishedDate: r.published_date,
         score: r.score,
-        official: (req.includeDomains ?? []).some((domain) => {
-          try {
-            const host = new URL(r.url!).hostname.toLowerCase();
-            return host === domain.toLowerCase() || host.endsWith(`.${domain.toLowerCase()}`);
-          } catch { return false; }
-        }),
+        official: onOfficialDomain(r.url!, officialDomains),
       })), 5);
   }
 }

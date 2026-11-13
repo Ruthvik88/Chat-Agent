@@ -1,10 +1,11 @@
-import { withoutUrls } from '../citations';
+import { officialProducts, onOfficialDomain } from '../search/official';
+import { sourceMatchesEntity, entitiesIn, withoutUrls } from '../citations';
 import { rankSources, sourceKey } from '../search/results';
 import { zonedParts, type DateRef } from './dates';
 import { renderRecalledContext, tokenize } from './recall';
 import type { SessionStore, Source, StoredTurn } from './store';
 
-/** At most this many claims are re-verified per turn; each costs up to three searches. */
+/** At most this many claims are re-verified per turn; each costs two parallel searches. */
 export const MAX_REVERIFY_CLAIMS = 6;
 
 /** Progress of the re-verify flow, so the client can show what is happening. */
@@ -22,6 +23,8 @@ export interface ClaimCheck {
   evidence: string[];
   /** False when neither search returned anything for this claim. */
   hasEvidence: boolean;
+  assessment?: { verdict: 'Changed' | 'Unchanged' | 'Could not verify'; value?: string; url?: string };
+  hasOfficial?: boolean;
 }
 
 export interface ReverifyReport {
@@ -349,45 +352,29 @@ export async function* reverifyAnswer(opts: {
           const inWindow = date && Number.isFinite(date.getTime())
             && date.getTime() > new Date(earlier.ts).getTime() && date.getTime() <= now.getTime();
           const timing = inWindow ? 'dated after original answer' : 'current page only; cannot establish changed since';
-          hits.push({ key, text: `${label} [${timing}] ${r.title} (${formatEvidenceDate(r.publishedDate)}) ${r.url}\n${r.content.slice(0, 500)}` });
+          hits.push({ key, text: `${label} [${r.official ? 'OFFICIAL' : 'background only'}; ${timing}] ${r.title} (${formatEvidenceDate(r.publishedDate)}) ${r.url}\n${r.content.slice(0, 500)}` });
           sources.push({ title: r.title, url: r.url, publishedDate: r.publishedDate, score: r.score, official: r.official, excerpt: r.content.slice(0, 500) });
         }
       };
 
-      // The model supplied the queries; fall back to the subject if it did not.
-      const windowedQuery = c.queries[0] ?? `${c.subject} ${c.claim}`;
-      const freshQuery = c.queries[1] ?? `${c.subject} pricing current`;
+      const known = officialProducts(c.subject + ' ' + c.claim);
+      const inferred = c.vendorDomain && /^(?:[a-z0-9-]+\.)+[a-z]{2,}$/.test(c.vendorDomain) ? [c.vendorDomain] : [];
+      const domains = known.length ? known.map((p) => p.domain) : inferred;
+      const subject = known.map((p) => p.name).join(' ') || c.subject;
+      const windowedQuery = `${subject} what's new since ${answerDate} ${c.queries[0] ?? ''}`;
+      const freshQuery = `${subject} pricing`;
       queries.push(windowedQuery, freshQuery);
-
-      const domain = c.vendorDomain && /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(c.vendorDomain)
-        ? c.vendorDomain : undefined;
-      if (domain) queries.push(`${c.subject} pricing current site:${domain}`);
-      const [windowed, fresh, official] = await Promise.allSettled([
-        search.search({
-          query: windowedQuery,
-          startDate: answerDate,
-          endDate: todayStr,
-          topic: 'general',
-          maxResults: 5,
-        }),
-        search.search({
-          query: freshQuery,
-          maxAgeHours: 24,
-          topic: 'general',
-          maxResults: 4,
-        }),
-        ...(domain ? [search.search({
-          query: `${c.subject} pricing current site:${domain}`,
-          includeDomains: [domain],
-          maxAgeHours: 24,
-          topic: 'general',
-          maxResults: 4,
-        })] : []),
+      const [windowed, fresh] = await Promise.allSettled([
+        search.search({ query: windowedQuery, startDate: answerDate, endDate: todayStr, topic: 'news', maxResults: 5 }),
+        search.search({ query: freshQuery, includeDomains: domains.length ? domains : undefined,
+          maxAgeHours: 24, topic: 'general', maxResults: 5 }),
       ]);
-
-      if (official?.status === 'fulfilled') collect('[vendor-domain search]', official.value);
-      if (windowed.status === 'fulfilled') collect('[date-window search]', windowed.value);
-      if (fresh.status === 'fulfilled') collect('[current page]', fresh.value);
+      if (fresh.status === 'fulfilled') collect('[current official page search]', fresh.value.map((r) => ({
+        ...r, official: onOfficialDomain(r.url, domains),
+      })));
+      if (windowed.status === 'fulfilled') collect('[date-window news search]', windowed.value.map((r) => ({
+        ...r, official: onOfficialDomain(r.url, domains),
+      })));
       // A search failure for one claim must not sink the whole report.
       perClaim.push({ claim: c.claim, subject: c.subject, hits });
     }),
@@ -396,7 +383,15 @@ export async function* reverifyAnswer(opts: {
 
   // 3. No verdict call: the claims and their raw evidence go to the answer
   //    model, which reports changed / unchanged / could not verify itself.
-  const selectedSources = rankSources(sources);
+  const bestPerClaim = claims.flatMap((c) => {
+    const keys = new Set(perClaim.find((p) => p.claim === c.claim)?.hits.map((h) => h.key));
+    const candidates = rankSources(sources.filter((s) => keys.has(sourceKey(s.url))));
+    const relevant = candidates.filter((s) => entitiesIn(c.subject).every((e) => sourceMatchesEntity(s, e, c.claim)));
+    return (relevant.length ? relevant : candidates).slice(0, 1);
+  });
+  const reserved = rankSources(bestPerClaim);
+  const selectedSources = rankSources([...reserved, ...rankSources(sources).filter((s) =>
+    !reserved.some((r) => sourceKey(r.url) === sourceKey(s.url))).slice(0, 6 - reserved.length)]);
   const selectedKeys = new Set(selectedSources.map((s) => sourceKey(s.url)));
   const checks: ClaimCheck[] = claims.map((c) => {
     const hits = perClaim.find((p) => p.claim === c.claim)?.hits ?? [];
@@ -406,6 +401,9 @@ export async function* reverifyAnswer(opts: {
       queries: c.queries,
       evidence: hits.filter((h) => selectedKeys.has(h.key)).map((h) => h.text),
       hasEvidence: hits.some((h) => selectedKeys.has(h.key)),
+      hasOfficial: selectedSources.some((s) => s.official && hits.some((h) => h.key === sourceKey(s.url))
+        && entitiesIn(c.subject).every((e) => sourceMatchesEntity(s, e, c.claim))),
+      assessment: assessClaim(c.claim, c.subject, selectedSources.filter((s) => hits.some((h) => h.key === sourceKey(s.url))), earlier.ts, now),
     };
   });
 
@@ -421,6 +419,35 @@ export async function* reverifyAnswer(opts: {
       timings,
     },
   };
+}
+
+/** Conservative single-price comparison; ambiguous plans/units remain for verification, never guessed. */
+export function assessClaim(claim: string, subject: string, sources: Source[], answeredAt: string, now: Date): ClaimCheck['assessment'] {
+  const relevant = sources.filter((s) => entitiesIn(subject).every((e) => sourceMatchesEntity(s, e, claim)));
+  const official = relevant.filter((s) => s.official);
+  const unknown = { verdict: 'Could not verify' as const };
+  if (!official.length) return unknown;
+  const prices = (text: string) => [...text.matchAll(/\$\s*(\d+(?:\.\d+)?)/g)].map((m) => Number(m[1]));
+  const earlier = prices(claim);
+  if (earlier.length !== 1) return undefined; // Qualitative claims need the answer instructions.
+  const plan = claim.match(/\b(Essentials?|Lite|Starter|Standard|Growth|Professional|Enterprise|Launch|Scale|Hobby|Pro)\b/i)?.[0];
+  for (const source of [...official, ...relevant.filter((s) => !s.official)]) {
+    const excerpt = source.excerpt ?? '';
+    if (plan && !new RegExp(`\\b${plan}\\b`, 'i').test(excerpt)) continue;
+    // Do not compare annual totals, currencies or seats against a different billing basis.
+    if (/per user|user\/|seat/i.test(claim) && !/user|seat/i.test(excerpt)) continue;
+    if (/month/i.test(claim) && !/month|\/mo\b/i.test(excerpt)) continue;
+    if (/annually|annual/i.test(claim) !== /annually|annual/i.test(excerpt)) continue;
+    const values = [...new Set(prices(excerpt))];
+    if (values.length !== 1) continue;
+    const same = values[0] === earlier[0];
+    const dated = Date.parse(source.publishedDate ?? '');
+    if (same && source.official) return { verdict: 'Unchanged', value: `$${values[0]}`, url: source.url };
+    if (!same && (source.official || (dated > Date.parse(answeredAt) && dated <= now.getTime()))) {
+      return { verdict: 'Changed', value: `$${values[0]}`, url: source.url };
+    }
+  }
+  return unknown;
 }
 
 function formatEvidenceDate(value?: string): string {
@@ -484,7 +511,7 @@ export function renderReverifyContext(report: ReverifyReport, numberedSources?: 
         return `    Evidence source ${id}: ${e}`;
       }).join('\n')
       : '    (no search results for this claim)';
-    return `- Claim: ${c.claim}\n  Evidence:\n${evidence}`;
+    return `- Claim: ${c.claim}\n  Official evidence available: ${!!c.hasOfficial}. Deterministic price check: ${JSON.stringify(c.assessment ? { verdict: c.assessment.verdict, value: c.assessment.value } : null)}\n  Evidence:\n${evidence}`;
   });
   const rendered = [
     '<reverify>',
@@ -493,11 +520,12 @@ export function renderReverifyContext(report: ReverifyReport, numberedSources?: 
     'Report the result as a markdown table with exactly three columns: Claim, Verdict, Evidence.',
     'One row per checked claim. If there are unchecked claims listed below, add a sentence after the table naming every one as NOT checked; otherwise no intro or summary.',
     'The Verdict cell is exactly one of: Changed, Unchanged, Could not verify.',
-    'Unchanged when evidence restates the same value (including equivalent seat/user and month wording).',
-    'Changed only when evidence states a different value AND is dated after the original answer, within the checking window.',
+    'Unchanged ONLY when an OFFICIAL page excerpt states the same value. Use exactly this wording: "the official page currently shows X, matching your earlier answer". Never infer "no change since" from a current pricing page.',
+    'Respect each deterministic price check verdict and value when present; do not upgrade Could not verify.',
+    'Changed only when an official page OR a source dated after the original answer states a different comparable value. Give the different value. An official current page proves a difference from the earlier answer, not when it changed.',
     'Evidence that is undated or older than the answer can support current page says X, never changed since.',
     'Otherwise use Could not verify. A different plan name alone does not prove a price changed.',
-    'For each row consult vendor-domain search evidence first. Cite a relevant official vendor page in preference to blogs or forums, even if the vendor page is undated or older (it can confirm a current value). Use third-party evidence only if official evidence does not address the claim.',
+    'If no relevant official page was retrieved for a claim, its verdict MUST be Could not verify. Blogs and forums are background only and never justify Unchanged. Prefer official pages and newest evidence. Label figures from sources older than 12 months as dated.',
     'Every price/number anywhere in the answer (including Claim cells) must carry a supporting numbered source citation [n]; otherwise drop it or explicitly mark it unverified.',
     'The Evidence cell gives the date as 12 Nov 2026 (or undated) and a numbered source citation [n].',
     'If a claim has no evidence at all, its verdict is Could not verify — never guess.',

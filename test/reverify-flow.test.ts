@@ -263,8 +263,9 @@ async function testNoEarlierAnswerFallsThroughToSearch() {
     'the re-verify flow must not run without an earlier answer',
   );
   // But the normal search path did run.
-  assert.equal(search.requests.length, 1, 'a normal search must still happen');
-  assert.equal(search.requests[0].query, 'neon pricing');
+  assert.equal(search.requests.length, 2, 'general and official searches must happen in one round');
+  assert.match(search.requests[0].query, /Neon serverless Postgres.*neon pricing/);
+  assert.deepEqual(search.requests[0].includeDomains, ['neon.tech']);
 
   await rm(join(config.dataDir, 'sessions', 'no-history-' + SESSION_SUFFIX + '.jsonl'), { force: true });
   console.log('no earlier answer falls through to search: all assertions passed');
@@ -470,7 +471,7 @@ async function testCurrentTurnAnswerIsNotTheEarlierOne() {
  * A claim with no evidence at all is the one case where the answer step is
  * offered the search tool back.
  */
-async function testToolIsOfferedBackWhenAClaimHasNoEvidence() {
+async function testNoExtraRoundWhenAClaimHasNoEvidence() {
   const store = new SessionStore();
   await store.init();
   await store.append('noev-' + SESSION_SUFFIX, {
@@ -493,10 +494,10 @@ async function testToolIsOfferedBackWhenAClaimHasNoEvidence() {
   }
 
   const lastRequest = llm.requests[llm.requests.length - 1];
-  assert.equal(lastRequest.tools?.length, 1, 'the answer step must be offered the search tool');
+  assert.equal(lastRequest.tools?.length, 0, 'missing evidence must not trigger an extra planning round');
 
   await rm(join(config.dataDir, 'sessions', 'noev-' + SESSION_SUFFIX + '.jsonl'), { force: true });
-  console.log('tool offered back when a claim has no evidence: all assertions passed');
+  console.log('missing evidence retains one search round: all assertions passed');
 }
 
 
@@ -508,7 +509,7 @@ main()
   .then(testOwnSessionWinsOverOtherSession)
   .then(testNoDuplicateSearches)
   .then(testCurrentTurnAnswerIsNotTheEarlierOne)
-  .then(testToolIsOfferedBackWhenAClaimHasNoEvidence)
+  .then(testNoExtraRoundWhenAClaimHasNoEvidence)
   .catch((err) => {
     console.error(err);
     process.exit(1);

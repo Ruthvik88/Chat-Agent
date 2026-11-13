@@ -1,4 +1,5 @@
-import { checkCitations, modelSource, withoutUrls, type CitationCheck } from './citations';
+import { sourceMatchesEntity, entitiesIn, checkCitations, modelSource, withoutUrls, type CitationCheck } from './citations';
+import { officialProducts, onOfficialDomain, isDated } from './search/official';
 import { rankSources, sourceKey } from './search/results';
 import type { Source } from './memory/store';
 import { currentTime } from './config';
@@ -117,10 +118,12 @@ const SYSTEM_PROMPT = `You are Minimi, a careful research assistant with one too
 Rules:
 - Search when the answer depends on facts that could have changed (prices, versions, availability, recent events) or when the user asks about something you said before. Do not search for timeless questions.
 - Every search query must include the entity and its product category to avoid homonyms: e.g. "Neon serverless Postgres pricing", "Railway PaaS Postgres pricing". Keep the entity and category in EVERY subsequent query too. Resolve short follow-ups from conversation context before writing queries. When known, use include_domains for official vendor searches.
-- Prefer several narrow searches over one broad one, and run independent searches in parallel.
+- Plan ONE parallel search round containing all needed queries, followed by ONE synthesis call. No extra planning rounds. For named product prices, plans, limits, releases or versions include the official domain(s) when confidently known alongside a general query. Resolve "the other one" from conversation context.
+- Prefer official pages and the newest sources. Every source includes a publication date; an undated page has no historical date. Never state numbers from a source older than 12 months without explicitly saying the source is dated.
+- If no relevant official page was retrieved for a product's price, plan, limit or release/version, say "I couldn't confirm the current figure from an official page". Blog numbers may only be labelled dated/unverified background, never presented as current facts.
 - For current pricing questions, omit publish-date filters: pricing pages are edited in place.
 - When the user asks whether something from an earlier answer has changed, pass start_date set to the day of that earlier answer, and end_date set to today.
-- If a <reverify> block is present, it already contains the extracted claims and the raw search evidence for each one. Build your answer on it instead of re-searching the same claims: for every claim report "changed", "unchanged" or "could not verify", with the date and numbered source citation [n]. Only search again for a claim the block has no evidence for.
+- If a <reverify> block is present, it already contains the extracted claims and the raw search evidence for each one. Build your answer on it instead of re-searching the same claims: for every claim report "changed", "unchanged" or "could not verify", with the date and numbered source citation [n]. Do not search again; missing official evidence means Could not verify.
 - Prefer official vendor pages over blogs and forums. Every factual claim needs a numbered citation [n] from the supplied source list. Cite ONLY [n]; never write URLs or markdown links. Unknown IDs are unverified.
 - Name the vendor/product explicitly in EACH factual sentence, list item or table row, including follow-ups. Keep separate claims separate. Do not attribute a competitor's price from a comparison page to its publisher.
 - If you could not find something, say so plainly instead of guessing.
@@ -205,75 +208,42 @@ async function runSearches(
   /** Queries already run by the re-verify flow, matched on text alone. */
   alreadySearched: Set<string>,
 ): Promise<Array<{ call: { name: string; args: Record<string, unknown>; id?: string }; outcome: SearchOutcome }>> {
-  const unique = new Map<string, { name: string; args: Record<string, unknown>; id?: string }>();
-  for (const call of calls) {
-    if (call.name !== 'web_search') continue;
-    const query = String(call.args.query ?? '').trim();
-    if (!query) continue;
-    if (alreadySearched.has(query.toLowerCase())) continue;
-    const key = JSON.stringify([
-      query.toLowerCase(),
-      call.args.start_date ?? '',
-      call.args.end_date ?? '',
-      call.args.topic ?? '',
-      call.args.include_domains ?? [],
-    ]);
-    if (seen.has(key)) continue;
-    // Check the budget *before* adding, so the cap holds for the whole turn
-    // and not just for one step.
-    if (budget.used + unique.size >= budget.allowance) break;
+  const pending = new Map<string, Promise<SearchOutcome>>();
+  const execute = (req: Parameters<SearchProvider['search']>[0], domains: string[]) => {
+    const key = JSON.stringify(req);
+    const existing = pending.get(key);
+    if (existing) return existing;
+    if (seen.has(key) || budget.used >= budget.allowance) return Promise.resolve({ query: req.query, results: [], error: 'search budget exhausted' });
     seen.add(key);
-    unique.set(key, call);
-  }
-  budget.used += unique.size;
-
-  const searches = new Map<string, Promise<SearchOutcome>>();
-  for (const [key, call] of unique) {
-    const query = String(call.args.query ?? '');
-    searches.set(
-      key,
-      deps.search
-        .search({
-          query,
-          startDate: call.args.start_date ? String(call.args.start_date) : undefined,
-          endDate: call.args.end_date ? String(call.args.end_date) : undefined,
-          topic: call.args.topic === 'news' ? 'news' : 'general',
-          maxResults: 5,
-          includeDomains: Array.isArray(call.args.include_domains)
-            ? call.args.include_domains.filter((d): d is string => typeof d === 'string') : undefined,
-        })
-        .then(
-          (results) => ({ query, results }),
-          (err) => ({
-            query,
-            results: [],
-            error: err instanceof Error ? err.message : String(err),
-          }),
-        ),
-    );
-  }
-
-  // One entry per original call, in the order the model asked for them.
-  return Promise.all(
-    calls.map(async (call) => {
-      if (call.name !== 'web_search') {
-        return { call, outcome: { query: '', results: [], error: `unknown tool ${call.name}` } };
-      }
-      const query = String(call.args.query ?? '').trim();
-      const key = JSON.stringify([
-        query.toLowerCase(),
-        call.args.start_date ?? '',
-        call.args.end_date ?? '',
-        call.args.topic ?? '',
-        call.args.include_domains ?? [],
-      ]);
-      const pending = searches.get(key);
-      const outcome = pending
-        ? await pending
-        : { query, results: [], error: 'skipped: this turn already used its search budget' };
-      return { call, outcome };
-    }),
-  );
+    budget.used++;
+    const task = deps.search.search(req).then((results) => ({ query: req.query,
+      results: results.map((r) => ({ ...r, official: onOfficialDomain(r.url, domains) })) }),
+      (err) => ({ query: req.query, results: [], error: String(err) }));
+    pending.set(key, task);
+    return task;
+  };
+  return Promise.all(calls.map(async (call) => {
+    const query = String(call.args.query ?? '').trim();
+    if (call.name !== 'web_search' || !query || alreadySearched.has(query.toLowerCase())) {
+      return { call, outcome: { query, results: [], error: 'unknown tool or repeated query' } };
+    }
+    const products = officialProducts(query);
+    const supplied = Array.isArray(call.args.include_domains) ? call.args.include_domains.filter((d): d is string =>
+      typeof d === 'string' && /^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(d)) : [];
+    const domains = [...new Set([...products.map((p) => p.domain), ...supplied])];
+    const categoryQuery = products.length && !products.every((p) => query.toLowerCase().includes(p.name.toLowerCase()))
+      ? `${products.map((p) => p.name).join(' ')} ${query}` : query;
+    const requests = [
+      ...(domains.length ? [{ query: categoryQuery, includeDomains: domains, maxResults: 5, maxAgeHours: 24 }] : []),
+      { query: categoryQuery, maxResults: 5,
+        startDate: call.args.start_date ? String(call.args.start_date) : undefined,
+        endDate: call.args.end_date ? String(call.args.end_date) : undefined,
+        topic: call.args.topic === 'news' ? 'news' as const : 'general' as const },
+    ];
+    const outcomes = await Promise.all(requests.map((req) => execute(req, domains)));
+    return { call, outcome: { query, results: rankSources(outcomes.flatMap((o) => o.results)),
+      error: outcomes.map((o) => 'error' in o ? o.error : '').filter(Boolean).join('; ') || undefined } };
+  }));
 }
 
 export async function* runAgent(
@@ -308,8 +278,36 @@ export async function* runAgent(
   let answerTtft: number | null = null;
   let requestError: string | undefined;
   let answer = '';
+  let missingOfficialNotice = '';
   const sources: Source[] = [];
   let answerPersisted = false;
+  let reverifyReport: Parameters<typeof renderReverifyContext>[0] | undefined;
+  const citationChecks = () => {
+    const checks = checkCitations(answer, sources);
+    if (!reverifyReport) return checks;
+    let offset = 0;
+    for (const line of answer.split('\n')) {
+      const verdict = line.match(/\|\s*(Changed|Unchanged)\s*\|/i)?.[1];
+      if (verdict) {
+        const rowClaim = (line.split('|')[1] ?? '').toLowerCase();
+        const claim = reverifyReport.checks.filter((c) => entitiesIn(c.subject).some((e) => rowClaim.includes(e.toLowerCase())))
+          .sort((a, b) => b.claim.toLowerCase().split(/\W+/).filter((w) => w && rowClaim.includes(w)).length
+            - a.claim.toLowerCase().split(/\W+/).filter((w) => w && rowClaim.includes(w)).length)[0];
+        const expected = claim?.assessment?.verdict;
+        const rowChecks = checks.filter((c) => c.offset >= offset && c.offset < offset + line.length);
+        const officialCitation = rowChecks.some((c) => c.verified && sources.find((s) => s.id === c.id)?.official);
+        const valueSource = claim?.assessment?.url;
+        const supportsValue = !valueSource || rowChecks.some((c) => c.verified && sources.find((s) => s.id === c.id)?.url === valueSource);
+        if (!supportsValue || !claim?.hasOfficial || (expected && expected.toLowerCase() !== verdict.toLowerCase())
+          || (verdict.toLowerCase() === 'unchanged' && !officialCitation)) {
+          for (const check of rowChecks) { check.verified = false; check.reason = 'verdict lacks required official/value evidence'; }
+          checks.push({ offset, id: 0, entity: claim?.subject ?? '', verified: false, reason: 'verdict lacks required official/value evidence' });
+        }
+      }
+      offset += line.length + 1;
+    }
+    return checks;
+  };
   const reverifyTimings = { extract_ms: 0 };
   const attemptOffset = deps.llm.stats.modelAttempts?.length ?? 0;
   const beginSpan = () => {
@@ -381,9 +379,7 @@ export async function* runAgent(
   // ---- Re-verify flow (also in code) ----
   let reverifyBlock = '';
   const reverifySources: Source[] = [];
-  let reverifyReport: Parameters<typeof renderReverifyContext>[0] | undefined;
   const reverifyQueries: string[] = [];
-  let needsFreshSearch = false;
   if (REVERIFY_SIGNALS.test(input.message) && hasEarlierAnswer(deps.store, input.sessionId, recalled)) {
     try {
       for await (const event of reverifyAnswer({
@@ -415,11 +411,7 @@ export async function* runAgent(
           reverifySources.push(...event.report.sources);
           reverifyQueries.push(...event.report.queries);
           reverifyTimings.extract_ms = event.report.timings.extract_ms;
-          // A claim with no evidence at all is the one case worth another search,
-          // and so is a failed extraction: nothing was checked either way.
-          needsFreshSearch =
-            event.report.extractFailed === true ||
-            event.report.checks.some((c) => !c.hasEvidence);
+
         }
       }
     } catch {
@@ -433,7 +425,7 @@ export async function* runAgent(
     for (const candidate of rankSources(incoming)) {
       if (sources.some((s) => sourceKey(s.url) === sourceKey(candidate.url)) || sources.length >= 6) continue;
       let domain = ''; try { domain = new URL(candidate.url).hostname; } catch { continue; }
-      sources.push({ ...candidate, id: sources.length + 1, domain });
+      sources.push({ ...candidate, id: sources.length + 1, domain, dated: isDated(candidate.publishedDate, now) });
     }
   };
   addSources(reverifySources);
@@ -452,7 +444,7 @@ export async function* runAgent(
   if (recalledBlock) userText += `\n\n${recalledBlock}`;
   const savedSources = rankSources([...recentTurns, ...recalled.map((r) => r.turn)].flatMap((t) => t.sources ?? []));
   // Leave room for new evidence on a follow-up; IDs never move within a turn.
-  if (!reverifyBlock) addSources(savedSources.slice(0, 3));
+  if (!reverifyBlock && !/price|pricing|cost|plan|limit|release|version|latest|other one/i.test(input.message)) addSources(savedSources.slice(0, 3));
   if (sources.length) userText += `\n\nNumbered evidence (cite only [n]):\n${JSON.stringify(sources.map(modelSource))}`;
   if (reverifyBlock) userText += `\n\n${reverifyBlock}`;
   turns.push({ role: 'user', text: userText });
@@ -468,14 +460,12 @@ export async function* runAgent(
   // The re-verify flow already ran these queries, so the agent must not repeat
   // them.
   const alreadySearched = new Set(reverifyQueries.map((q) => q.toLowerCase()));
-  // A re-verify block already carries the evidence, so the final answer step is
-  // given no search tool at all — unless a claim came back with no evidence
-  // whatsoever, in which case one extra search is allowed.
+  // Re-verify already used its one parallel round; missing evidence is disclosed.
   const searchBudget = { used: 0, allowance: MAX_SEARCHES_PER_TURN };
   const tools = [WEB_SEARCH_TOOL];
   if (reverifyBlock) {
-    searchBudget.allowance = needsFreshSearch ? 1 : 0;
-    if (!needsFreshSearch) tools.length = 0;
+    searchBudget.allowance = 0;
+    tools.length = 0;
   }
 
   const request: LlmRequest = { system, turns, tools };
@@ -488,7 +478,7 @@ export async function* runAgent(
     loopStep = step + 1;
     phase = 'loop';
     // Reserve the final normal step for synthesis instead of adding a fourth call.
-    if (!reverifyBlock && (step === stepLimit - 1 || searchBudget.used >= searchBudget.allowance)) {
+    if (!reverifyBlock && (step >= 1 || searchBudget.used >= searchBudget.allowance)) {
       request.tools = [];
       turns.push({ role: 'user', text: 'Stop searching and answer now using the supplied evidence. Do not call tools. Name the product in every factual claim and cite only source IDs [n], never URLs. If the excerpts do not establish the requested facts, say what could not be verified.' });
     }
@@ -506,10 +496,14 @@ export async function* runAgent(
     for await (const event of llm.stream(request) as AsyncIterable<LlmEvent>) {
       if (event.type === 'text') {
         if (ttft === null) ttft = Date.now() - startedAt;
+        if (missingOfficialNotice && !answer) {
+          answer += missingOfficialNotice + '\n\n';
+          yield { type: 'text', text: answer };
+        }
         assistantText += event.text;
         answer += event.text;
         yield { type: 'text', text: event.text };
-        yield { type: 'citations', checks: checkCitations(answer, sources) };
+        yield { type: 'citations', checks: citationChecks() };
       } else if (event.type === 'status') {
         yield { type: 'status', message: event.message };
       } else if (event.type === 'tool_calls') {
@@ -536,7 +530,7 @@ export async function* runAgent(
         // The citations travel with the turn, so a reloaded conversation still
         // shows where its answers came from.
         sources: rankSources(sources),
-        citationChecks: checkCitations(answer, sources),
+        citationChecks: citationChecks(),
       });
       answerPersisted = true;
       exhausted = false;
@@ -564,6 +558,12 @@ export async function* runAgent(
     // result wins over an earlier third-party duplicate.
     const candidates = searched.flatMap(({ outcome }) => outcome.results);
     addSources(candidates.map(({ title, url, publishedDate, score, official, content }) => ({ title, url, publishedDate, score, official, excerpt: content })));
+    if (!reverifyBlock) {
+      const products = officialProducts(input.message + ' ' + searched.map(({ outcome }) => outcome.query).join(' '));
+      const missing = products.filter((p) => !sources.some((s) => s.official && onOfficialDomain(s.url, [p.domain])
+        && entitiesIn(p.name).every((e) => sourceMatchesEntity(s, e, p.name))));
+      if (missing.length) missingOfficialNotice = `I couldn't confirm the current figure from an official page for ${missing.map((p) => p.name).join(', ')}. Any third-party figures below are unverified background.`;
+    }
     const batch = rankSources(candidates.filter((r) => !seenEvidence.has(sourceKey(r.url))));
     const selected = new Set(batch.map((r) => r));
     for (const { outcome } of searched) {
@@ -591,6 +591,7 @@ export async function* runAgent(
         }),
       })),
     });
+    turns.push({ role: 'user', text: 'Synthesize now from this single search round. Cite official sources first. If a product has no relevant official page, say "I couldn\'t confirm the current figure from an official page" and label any blog figures unverified background. Label numbers from dated sources as dated. Do not make further tool calls.' });
     request.turns = turns;
     // Still searching: if the step budget runs out now, a final answer is needed.
     exhausted = true;
@@ -631,7 +632,7 @@ export async function* runAgent(
           if (answerTtft === null) answerTtft = steps.at(-1)?.model_ttft_ms ?? null;
           answer += event.text;
           yield { type: 'text', text: event.text };
-          yield { type: 'citations', checks: checkCitations(answer, sources) };
+          yield { type: 'citations', checks: citationChecks() };
         }
       }
     await deps.store.append(input.sessionId, {
@@ -641,7 +642,7 @@ export async function* runAgent(
       kind: 'message',
       text: answer.trim(),
       sources: rankSources(sources),
-      citationChecks: checkCitations(answer, sources),
+      citationChecks: citationChecks(),
     });
   }
 
@@ -650,7 +651,7 @@ export async function* runAgent(
     if (answer.trim() && !answerPersisted) {
       try {
         await deps.store.append(input.sessionId, { ts: currentTime().toISOString(), tz, role: 'assistant', kind: 'message',
-          text: answer.trim() + '\n\nAnswer interrupted. Please retry.', sources: rankSources(sources), citationChecks: checkCitations(answer, sources) });
+          text: answer.trim() + '\n\nAnswer interrupted. Please retry.', sources: rankSources(sources), citationChecks: citationChecks() });
       } catch { /* The error event still reaches the user if persistence is unavailable. */ }
     }
     yield { type: 'error', message: `The models could not complete this answer. Please retry. ${requestError}` };
