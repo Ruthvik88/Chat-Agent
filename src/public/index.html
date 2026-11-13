@@ -787,6 +787,23 @@
 
       'use strict';
 
+      /** The verdict column is a word plus a mark, never colour on its own. */
+      function decorateVerdicts(container) {
+        var cells = container.querySelectorAll('td');
+        for (var i = 0; i < cells.length; i++) {
+          var cell = cells[i];
+          var text = cell.textContent.trim().toLowerCase();
+          if (!text) continue;
+          if (text.indexOf('changed') === 0) {
+            cell.classList.add('verdict', 'verdict-changed');
+          } else if (text.indexOf('unchanged') === 0) {
+            cell.classList.add('verdict', 'verdict-same');
+          } else if (text.indexOf('could not verify') === 0) {
+            cell.classList.add('verdict');
+          }
+        }
+      }
+
       /* ==================================================================
          State
          ================================================================== */
