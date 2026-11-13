@@ -127,9 +127,11 @@ app.post('/api/chat', async (req, res) => {
         const m = event.metrics;
         console.log(
           `[chat] ${sessionId} ttft=${m.ttft_ms ?? '-'}ms answer_ttft=${m.answer_ttft_ms ?? '-'}ms ` +
+            `model_call_1=${m.model_call_1_ms ?? '-'}ms search=${m.search_ms ?? '-'}ms ` +
+            `model_call_2_ttft=${m.model_call_2_ttft_ms ?? '-'}ms thinking_tok=${m.thinking_tokens ?? '-'} ` +
             `total=${m.total_ms}ms model=${m.model_used} primary=${m.primary_model} ` +
             `retries=${m.retries} fallback=${m.fallback_used} searches=${m.search_calls} ` +
-            `stages[extract=${m.extract_ms} search=${m.search_ms}]`,
+            `stages[extract=${m.extract_ms} reverify_search=${m.search_ms}]`,
         );
         send('done', { sessionId, ...m });
         continue;

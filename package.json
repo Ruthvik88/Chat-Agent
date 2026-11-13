@@ -7,7 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx test/dates.test.ts && tsx test/memory.test.ts && tsx test/recall.test.ts && tsx test/seed.test.ts && tsx test/reverify.test.ts && tsx test/reverify-flow.test.ts && tsx test/reverify-cost.test.ts && tsx test/gemini.test.ts && tsx test/failover.test.ts && tsx test/breaker.test.ts && tsx test/tavily.test.ts && tsx test/agent.test.ts && tsx test/context.test.ts",
+    "test": "tsx test/dates.test.ts && tsx test/memory.test.ts && tsx test/recall.test.ts && tsx test/seed.test.ts && tsx test/reverify.test.ts && tsx test/reverify-flow.test.ts && tsx test/reverify-cost.test.ts && tsx test/gemini.test.ts && tsx test/failover.test.ts && tsx test/breaker.test.ts && tsx test/tavily.test.ts && tsx test/agent.test.ts && tsx test/context.test.ts && tsx test/markdown.test.ts && tsx test/eval-checks.test.ts",
     "eval": "tsx eval/eval.ts"
   },
   "dependencies": {

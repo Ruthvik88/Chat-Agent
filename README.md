@@ -104,6 +104,6 @@ src/
   llm/           LlmProvider interface + Gemini implementation + circuit breaker
   search/        SearchProvider interface + Tavily implementation
   memory/        JSONL store, date resolver, recall, re-verify flow
-  public/        Single-page chat UI (markup, styles and a markdown renderer in one file)
-eval/            Scenario eval: the harness and its injectable search stub
+  public/        Single-page chat UI (index.html) and its markdown renderer (markdown.js)
+eval/            Scenario eval: the harness, the checks, and the injectable search stub
 ```

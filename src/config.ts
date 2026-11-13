@@ -18,8 +18,8 @@ export const config = {
   // counts the ~20 requests/day quota per model, so exhausting one still leaves
   // the other usable. gemini-3.8-flash is the primary; it is also the model
   // most likely to saturate, hence the first-token timeout below.
-  model: process.env.MODEL ?? 'gemini-3.8-flash',
-  fallbackModel: process.env.FALLBACK_MODEL ?? 'gemini-3.5-flash-lite',
+  model: process.env.MODEL ?? 'gemini-3.5-flash-lite',
+  fallbackModel: process.env.FALLBACK_MODEL ?? 'gemini-3.1-flash-lite',
   /** How long the primary model has to produce its first token. */
   primaryTtftTimeoutMs: firstTokenTimeout(process.env.PRIMARY_TTFT_TIMEOUT_MS),
   /** The cheap model used for structured calls (claim extraction). */

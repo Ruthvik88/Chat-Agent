@@ -443,6 +443,12 @@ otherwise become the next scenario's context — and a scenario meant to run aga
 would not be empty. And the run is **paced** between scenarios, because the free tier allows about
 15 model requests a minute and the scenarios make two or three each.
 
+The scenarios and their checks live in `eval/checks.ts`, apart from the harness, so they can be
+exercised against a written answer as well as against a live one. `test/eval-checks.test.ts` does
+exactly that: a fabricated *"you asked me about Neon and Railway pricing on 3 November"* must
+**fail** the no-history check, while the honest ways of saying the same thing must pass. A check that
+never fails is worse than no check.
+
 **Free-tier limits.** The Gemini free tier allows about **20 generate-content requests per day per
 model per project**, and Tavily's free plan allows 1 000 search credits per month. Both are enough to
 demo the app, and both are easy to hit. The agent is built for that: it keeps two different models so
@@ -488,8 +494,10 @@ readable message rather than failing inside the date resolver.
 
 ## 11. The chat page
 
-`src/public/index.html` is one file with no build step and no dependencies: the markup, the styles
-and a small markdown renderer all live there.
+`src/public/index.html` is the page, and `src/public/markdown.js` is the renderer it imports. The
+split is what makes the renderer testable: `test/markdown.test.ts` imports the same module the page
+does and asserts the output without a browser. There is no build step and no dependency — the page
+loads an ES module the static server already serves.
 
 **Layout.** One column, `40rem` wide, so the prose sits at about 76 characters. The header carries
 the wordmark, the time zone and "New chat"; the composer is pinned to the bottom; the conversation
@@ -506,9 +514,11 @@ in a small monospace tag, because what this product does is remember *when* some
 
 **Markdown.** A small renderer handles headings, lists, bold, italics, inline and fenced code,
 blockquotes, links and GitHub-style tables — enough for what the model writes, including the
-re-verify table. Everything is escaped before it is parsed and link targets are restricted to
-`http(s)` and `mailto`, so model output can never inject markup. The re-verify flow asks the model
-for a three-column table, which is what the answer looks like.
+re-verify table. Two rules make it safe: everything is escaped before it is parsed, and a link
+target is only used when it is an `http(s)` or `mailto` URL. `test/markdown.test.ts` holds both:
+an `<img onerror>`, a `javascript:` link, a `data:` link, unclosed tags, malformed tables and
+deeply nested lists must all come out inert — the test asserts that after the tags the renderer is
+allowed to emit are removed, **no angle bracket may survive**.
 
 **Streaming.** The answer is re-rendered on an animation frame, so a fast model does not spend the
 budget re-parsing markdown on every token. The progress chips are replaced by the answer the

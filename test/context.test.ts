@@ -127,12 +127,82 @@ async function testDatedTurnIsVisible() {
   console.log('dated turn visibility: all assertions passed');
 }
 
+/**
+ * A conversation seeded in one session must be found from a brand-new one.
+ *
+ * This is the whole point of the recall: the user does not have to be in the
+ * same tab, or even the same session, to ask about what they asked before.
+ */
+async function testSeededHistoryIsFoundFromAnotherSession() {
+  const store = new SessionStore();
+  await store.init();
+
+  const seededSession = 'seeded-' + Date.now();
+  const freshSession = 'fresh-' + Date.now();
+
+  // Seed a prior conversation with its ORIGINAL timestamps.
+  const added = await store.seed(
+    seededSession,
+    [
+      {
+        role: 'user',
+        content: 'What are the best Postgres hosting providers for a small team?',
+        timestamp: '2026-11-03T06:00:00.000Z',
+      },
+      {
+        role: 'assistant',
+        content: 'Neon and Railway are the two worth comparing for a small team.',
+        timestamp: '2026-11-03T06:01:00.000Z',
+      },
+    ],
+    'Asia/Kolkata',
+  );
+  assert.equal(added, 2, 'both turns must be seeded');
+
+  const llm = new CapturingLlm();
+  const search = new NoSearch();
+
+  // A brand-new session asks about that day.
+  for await (const _ of runAgent(
+    {
+      sessionId: freshSession,
+      message: 'What did I ask you on 3 November?',
+      timezone: 'Asia/Kolkata',
+      now: new Date('2026-11-12T03:30:00.000Z'),
+    },
+    { llm, search, store },
+  )) {
+    // drain
+  }
+
+  const sent = llm.requests[0];
+  const userTurn = sent.turns[sent.turns.length - 1];
+
+  // The seeded turn reaches the model, from the other session, with its date.
+  assert.match(userTurn.text!, /<past_turns>/, 'the recall block must be present');
+  assert.match(userTurn.text!, /Postgres hosting providers/, 'the seeded question must be recalled');
+  assert.match(userTurn.text!, /2026-11-03T06:00:00\.000Z/, 'the absolute timestamp must travel with it');
+  assert.match(userTurn.text!, /Neon and Railway/, 'the seeded answer must be recalled too');
+
+  // And the answer comes from memory, so nothing is searched for.
+  assert.equal(search.requests.length, 0, 'a question about the past must not search the web');
+
+  await rm(join(config.dataDir, 'sessions', `${seededSession}.jsonl`), { force: true });
+  await rm(join(config.dataDir, 'sessions', `${freshSession}.jsonl`), { force: true });
+  console.log('seeded history found from another session: all assertions passed');
+}
+
 main().catch((err) => {
   console.error(err);
   process.exit(1);
 });
 
 testDatedTurnIsVisible().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+
+testSeededHistoryIsFoundFromAnotherSession().catch((err) => {
   console.error(err);
   process.exit(1);
 });

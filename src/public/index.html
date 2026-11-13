@@ -782,262 +782,10 @@
       <p id="composer-hint" class="composer-hint"></p>
     </div>
 
-    <script>
+    <script type="module">
+      import { renderMarkdown, renderSourcesHtml } from './markdown.js';
+
       'use strict';
-
-      /* ==================================================================
-         Markdown
-         A small renderer: enough for what the model writes, and safe.
-         Everything is escaped first, so model output can never inject
-         markup, and link targets are restricted to http(s) and mailto.
-         ================================================================== */
-      var ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-
-      function escapeHtml(s) {
-        return String(s).replace(/[&<>"']/g, function (c) {
-          return ESCAPES[c];
-        });
-      }
-
-      /** Returns a usable href, or null when the target must not be linked. */
-      function safeUrl(raw) {
-        var t = String(raw).trim();
-        if (/^https?:\/\//i.test(t)) return t;
-        if (/^mailto:[^\s@]+@[^\s@]+$/i.test(t)) return t;
-        return null;
-      }
-
-      function link(href, text) {
-        return (
-          '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + text + '</a>'
-        );
-      }
-
-      /** Inline markdown inside one already-split text run. */
-      function renderText(src) {
-        var s = escapeHtml(src);
-
-        // [label](target) — an unusable target degrades to plain text.
-        s = s.replace(
-          /\[([^\]\n]*)\]\(([^)\s]+)(?:\s+&quot;[^)]*&quot;)?\)/g,
-          function (m, label, target) {
-            var href = safeUrl(target);
-            var text = label || target;
-            return href ? link(href, text) : text;
-          },
-        );
-
-        // Bare links.
-        s = s.replace(
-          /(^|[\s(])(https?:\/\/[^\s<>"']+)/g,
-          function (m, pre, url) {
-            return pre + link(url, url);
-          },
-        );
-
-        s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-        s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-        s = s.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
-
-        return s;
-      }
-
-      /**
-       * Inline markdown for a whole line. Code spans are split out first, so
-       * their contents never see the other replacements.
-       */
-      function renderInline(src) {
-        return String(src)
-          .split(/(`[^`\n]+`)/g)
-          .map(function (part) {
-            if (part.length > 2 && part.charAt(0) === '`' && part.charAt(part.length - 1) === '`') {
-              return '<code>' + escapeHtml(part.slice(1, -1)) + '</code>';
-            }
-            return renderText(part);
-          })
-          .join('');
-      }
-
-      var BLOCK_START = /^\s*(#{1,4}\s|```|>|\||[-*+]\s|\d+[.)]\s)/;
-
-      function splitRow(row) {
-        return row
-          .trim()
-          .replace(/^\|/, '')
-          .replace(/\|$/, '')
-          .split('|')
-          .map(function (c) {
-            return c.trim();
-          });
-      }
-
-      function alignOf(cell) {
-        var left = cell.charAt(0) === ':';
-        var right = cell.charAt(cell.length - 1) === ':';
-        if (left && right) return 'ta-center';
-        if (right) return 'ta-right';
-        if (left) return 'ta-left';
-        return '';
-      }
-
-      function renderTable(head, align, rows) {
-        var th = head
-          .map(function (c, i) {
-            return (
-              '<th' + (align[i] ? ' class="' + align[i] + '"' : '') + '>' + renderInline(c) + '</th>'
-            );
-          })
-          .join('');
-        var body = rows
-          .map(function (r) {
-            return (
-              '<tr>' +
-              r
-                .map(function (c, i) {
-                  return (
-                    '<td' + (align[i] ? ' class="' + align[i] + '"' : '') + '>' + renderInline(c) + '</td>'
-                  );
-                })
-                .join('') +
-              '</tr>'
-            );
-          })
-          .join('');
-        return (
-          '<div class="table-wrap"><table><thead><tr>' +
-          th +
-          '</tr></thead><tbody>' +
-          body +
-          '</tbody></table></div>'
-        );
-      }
-
-      function renderList(items, ordered) {
-        var tag = ordered ? 'ol' : 'ul';
-        var html = '';
-        var i = 0;
-        while (i < items.length) {
-          var base = items[i].indent;
-          var group = [];
-          while (i < items.length && items[i].indent === base) group.push(items[i++]);
-          var nested = [];
-          while (i < items.length && items[i].indent > base) nested.push(items[i++]);
-          var nestedHtml = nested.length ? renderList(nested, false) : '';
-          group.forEach(function (item, idx) {
-            html +=
-              '<li>' +
-              renderInline(item.text) +
-              (nestedHtml && idx === group.length - 1 ? nestedHtml : '') +
-              '</li>';
-          });
-        }
-        return '<' + tag + '>' + html + '</' + tag + '>';
-      }
-
-      function renderMarkdown(src) {
-        var lines = String(src).replace(/\r\n?/g, '\n').split('\n');
-        var out = [];
-        var i = 0;
-
-        while (i < lines.length) {
-          var line = lines[i];
-
-          if (/^\s*```/.test(line)) {
-            var buf = [];
-            i++;
-            while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++]);
-            i++;
-            out.push('<pre class="code"><code>' + escapeHtml(buf.join('\n')) + '</code></pre>');
-            continue;
-          }
-
-          // A GFM table: a header row, a delimiter row, then body rows.
-          if (
-            /^\s*\|/.test(line) &&
-            i + 1 < lines.length &&
-            /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(lines[i + 1]) &&
-            lines[i + 1].indexOf('-') !== -1
-          ) {
-            var head = splitRow(line);
-            var align = splitRow(lines[i + 1]).map(alignOf);
-            i += 2;
-            var rows = [];
-            while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(splitRow(lines[i++]));
-            out.push(renderTable(head, align, rows));
-            continue;
-          }
-
-          var heading = /^(#{1,4})\s+(.*)$/.exec(line);
-          if (heading) {
-            var level = Math.min(heading[1].length + 1, 5);
-            out.push('<h' + level + '>' + renderInline(heading[2]) + '</h' + level + '>');
-            i++;
-            continue;
-          }
-
-          if (/^\s*([-*_])\s*(\1\s*){2,}$/.test(line)) {
-            out.push('<hr />');
-            i++;
-            continue;
-          }
-
-          if (/^\s*>/.test(line)) {
-            var quoted = [];
-            while (i < lines.length && /^\s*>/.test(lines[i])) {
-              quoted.push(lines[i++].replace(/^\s*>\s?/, ''));
-            }
-            out.push('<blockquote>' + renderMarkdown(quoted.join('\n')) + '</blockquote>');
-            continue;
-          }
-
-          if (/^\s*([-*+]|\d+[.)])\s+/.test(line)) {
-            var ordered = /^\s*\d+[.)]\s+/.test(line);
-            var items = [];
-            while (i < lines.length) {
-              var m = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(lines[i]);
-              if (!m) break;
-              items.push({ indent: m[1].length, text: m[3] });
-              i++;
-            }
-            out.push(renderList(items, ordered));
-            continue;
-          }
-
-          if (!line.trim()) {
-            i++;
-            continue;
-          }
-
-          var para = [];
-          while (i < lines.length && lines[i].trim() && !BLOCK_START.test(lines[i])) {
-            para.push(lines[i++]);
-          }
-          if (para.length) {
-            out.push('<p>' + renderInline(para.join('\n')).replace(/\n/g, '<br />') + '</p>');
-          } else {
-            i++;
-          }
-        }
-
-        return out.join('\n');
-      }
-
-      /** The verdict column is a word plus a mark, never colour on its own. */
-      function decorateVerdicts(container) {
-        var cells = container.querySelectorAll('td');
-        for (var i = 0; i < cells.length; i++) {
-          var cell = cells[i];
-          var text = cell.textContent.trim().toLowerCase();
-          if (!text) continue;
-          if (text.indexOf('changed') === 0) {
-            cell.classList.add('verdict', 'verdict-changed');
-          } else if (text.indexOf('unchanged') === 0) {
-            cell.classList.add('verdict', 'verdict-same');
-          } else if (text.indexOf('could not verify') === 0) {
-            cell.classList.add('verdict');
-          }
-        }
-      }
 
       /* ==================================================================
          State
@@ -1055,13 +803,35 @@
       var SESSION_KEY = 'minimi.session';
       var TZ_KEY = 'minimi.tz';
 
-      var sessionId = localStorage.getItem(SESSION_KEY);
-      if (!sessionId) {
-        sessionId = crypto.randomUUID();
-        localStorage.setItem(SESSION_KEY, sessionId);
+      /**
+       * localStorage throws when the browser blocks it, so every read and
+       * write is guarded. Without this a blocked-storage browser would lose
+       * the whole page script, not just the stored preferences.
+       */
+      function stored(key) {
+        try {
+          return localStorage.getItem(key);
+        } catch (err) {
+          return null;
+        }
       }
 
-      var timezone = localStorage.getItem(TZ_KEY) || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      function remember(key, value) {
+        try {
+          localStorage.setItem(key, value);
+        } catch (err) {
+          /* the preference is simply not remembered */
+        }
+      }
+
+      var sessionId = stored(SESSION_KEY);
+      if (!sessionId) {
+        sessionId = crypto.randomUUID();
+        remember(SESSION_KEY, sessionId);
+      }
+
+      // The user's own zone, unless they have set one.
+      var timezone = stored(TZ_KEY) || Intl.DateTimeFormat().resolvedOptions().timeZone;
       if (!isValidTimezone(timezone)) timezone = 'UTC';
       tzInput.value = timezone;
 
@@ -1201,33 +971,9 @@
       }
 
       function renderSources(list) {
-        var ol = document.createElement('ol');
-        ol.className = 'sources';
-        list.forEach(function (s) {
-          var li = document.createElement('li');
-          var href = safeUrl(s.url);
-          if (href) {
-            var a = document.createElement('a');
-            a.href = href;
-            a.target = '_blank';
-            a.rel = 'noopener noreferrer';
-            a.textContent = s.title || s.url;
-            li.appendChild(a);
-          } else {
-            var span = document.createElement('span');
-            span.textContent = s.title || s.url;
-            li.appendChild(span);
-          }
-          if (s.publishedDate) {
-            var date = document.createElement('time');
-            date.className = 'src-date';
-            date.dateTime = s.publishedDate;
-            date.textContent = s.publishedDate;
-            li.appendChild(date);
-          }
-          ol.appendChild(li);
-        });
-        return ol;
+        var host = document.createElement('div');
+        host.innerHTML = renderSourcesHtml(list);
+        return host.firstChild;
       }
 
       function renderNotice(title, body, retry) {
@@ -1522,7 +1268,7 @@
 
       newChatBtn.addEventListener('click', function () {
         sessionId = crypto.randomUUID();
-        localStorage.setItem(SESSION_KEY, sessionId);
+        remember(SESSION_KEY, sessionId);
         clearConversation();
         input.focus();
         scrollToEnd(true);
@@ -1536,7 +1282,7 @@
           return;
         }
         timezone = value;
-        localStorage.setItem(TZ_KEY, value);
+        remember(TZ_KEY, value);
         setHint('');
       });
 

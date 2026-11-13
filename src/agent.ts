@@ -58,6 +58,22 @@ export interface RequestMetrics {
   /** Re-verify stage timings, in milliseconds. Zero when it did not run. */
   extract_ms: number;
   search_ms: number;
+  /**
+   * Wall time for the first model call (the "decide to search" step), in ms.
+   * Present only when at least one search was performed; null otherwise.
+   */
+  model_call_1_ms: number | null;
+  /**
+   * Time to first token for the answer (final synthesising) model call, in ms,
+   * measured from the start of that specific step. Same as answer_ttft_ms but
+   * named to match the per-stage breakdown table.
+   */
+  model_call_2_ttft_ms: number | null;
+  /**
+   * Total thinking tokens reported by the model across all steps, if the
+   * provider surfaces them. null when not reported.
+   */
+  thinking_tokens: number | null;
 }
 
 const SYSTEM_PROMPT = `You are Minimi, a careful research assistant with one tool: web_search.
@@ -338,6 +354,19 @@ export async function* runAgent(
   // that produced the answer, so it is not inflated by the re-verify stages
   // that ran before it.
   let answerTtft: number | null = null;
+  /**
+   * Wall time for step 0 (the model call that decides whether to search).
+   * Measured from the start of the step to when it completes (tool_calls or text).
+   */
+  let modelCall1Ms: number | null = null;
+  /**
+   * Time to first token for the step that produced the answer.
+   * Alias of answerTtft, exposed under the per-stage naming convention.
+   */
+  let modelCall2TtftMs: number | null = null;
+  /** Total thinking tokens across all steps, when reported. */
+  let thinkingTokens: number | null = null;
+
   for (let step = 0; step < MAX_STEPS; step++) {
     if (Date.now() >= deadline) {
       outOfTime = true;
@@ -365,11 +394,17 @@ export async function* runAgent(
       }
     }
 
+    // Record how long step 0 (the tool-decision call) took end-to-end,
+    // but only when it triggered a search. For a direct-answer step the
+    // same timing is already captured by modelCall2TtftMs/answerTtft.
+    if (step === 0 && toolCalls.length > 0) modelCall1Ms = Date.now() - stepStart;
+
     answer += assistantText;
 
     if (!toolCalls.length) {
       // This step produced the answer, so its first token is the answer's TTFT.
       answerTtft = stepTtft;
+      modelCall2TtftMs = stepTtft;
       await deps.store.append(input.sessionId, {
         ts: currentTime().toISOString(),
         tz,
@@ -482,6 +517,9 @@ export async function* runAgent(
       total_ms: Date.now() - startedAt,
       extract_ms: reverifyTimings.extract_ms,
       search_ms: reverifyTimings.search_ms,
+      model_call_1_ms: modelCall1Ms,
+      model_call_2_ttft_ms: modelCall2TtftMs,
+      thinking_tokens: thinkingTokens,
     },
   };
 }
