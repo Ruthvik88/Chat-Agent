@@ -6,6 +6,8 @@ export interface SearchRequest {
   endDate?: string;
   topic?: 'general' | 'news';
   maxResults?: number;
+  /** Restrict results to these domains. */
+  includeDomains?: string[];
   /**
    * Max age (hours) of Tavily's cached copy of each result. 1-720, 0 = always
    * fetch live. Use this instead of a date window to read a page that is
@@ -23,6 +25,7 @@ export interface SearchResult {
   content: string;
   publishedDate?: string;
   score?: number;
+  official?: boolean;
 }
 
 /** The single interface every search backend implements. */

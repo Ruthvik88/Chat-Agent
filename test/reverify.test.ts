@@ -296,3 +296,64 @@ testExtractionFailureIsNotAnEmptyAnswer().catch((err) => {
   console.error(err);
   process.exit(1);
 });
+
+/** Canned CRM regressions: coverage, same-value evidence, stale dates and display dates.
+ * Verdict selection is an LLM instruction contract here; this is not a live model test.
+ */
+async function testCrmRegressions() {
+  const store = new SessionStore();
+  const sessionId = `crm-regressions-${Date.now()}`;
+  const claims = ['HubSpot', 'Salesforce', 'Zoho', 'Pipedrive', 'Freshsales', 'Copper', 'Insightly'].map((subject) => ({
+    subject,
+    claim: subject === 'Pipedrive' ? 'Pipedrive Essentials is $24/user/month' : `${subject} offers CRM software`,
+    queries: [`${subject} pricing`],
+    vendorDomain: subject === 'Pipedrive' ? 'pipedrive.com' : '',
+  }));
+  await store.append(sessionId, {
+    ts: '2026-11-09T03:30:00.000Z', tz: TZ, role: 'assistant', kind: 'message',
+    text: claims.map((c) => c.claim).join('\n'),
+  });
+  const requests: SearchRequest[] = [];
+  const search = { async search(req: SearchRequest): Promise<SearchResult[]> {
+    requests.push(req);
+    return [
+      { title: 'Pricing', url: 'https://pipedrive.com/pricing', content: 'Essentials starts at $24 a seat a month.', publishedDate: 'Wed, 11 Nov 2026 21:00:00 GMT' },
+      { title: 'Old pricing', url: 'https://example.com/old', content: 'Essentials starts at $30.', publishedDate: '2026-04-12' },
+      { title: 'Undated pricing', url: 'https://example.com/undated', content: 'Essentials starts at $35.' },
+      { title: 'Invalid date', url: 'https://example.com/invalid', content: 'Essentials starts at $40.', publishedDate: 'unknown' },
+    ];
+  } };
+  try {
+    for (const count of [5, 7]) {
+      let extractionPrompt = '';
+      let report!: ReverifyReport;
+      for await (const event of reverifyAnswer({
+        store, sessionId, search, question: 'Has any of them changed pricing or shipped something big since?',
+        dateRefs: [], tz: TZ, now: new Date('2026-11-12T09:00:00+05:30'),
+        llm: { async structured<T>(req: { system: string }): Promise<T> {
+          extractionPrompt = req.system;
+          return { claims: claims.slice(0, count) } as T;
+        } },
+      })) if (event.type === 'report') report = event.report;
+      assert.match(extractionPrompt, /Do not cap extraction/);
+      assert.equal(report.checks.length, Math.min(count, 6));
+      assert.ok(report.checks.some((c) => c.subject === 'Freshsales'), 'fifth CRM must be checked');
+      assert.deepEqual(report.uncheckedClaims, count === 7 ? ['Insightly offers CRM software'] : []);
+      const context = renderReverifyContext(report);
+      if (count === 7) assert.match(context, /NOT checked \(search cap\):\n- Insightly offers CRM software/);
+      assert.match(context, /Unchanged when evidence restates the same value/);
+      assert.match(context, /Changed only when evidence states a different value AND is dated after the original answer/);
+      assert.match(context, /Every price\/number anywhere.*source link/);
+      assert.match(context, /\[dated after original answer\].*\(11 Nov 2026\)/);
+      assert.match(context, /\[current page only; cannot establish changed since\].*\(12 Apr 2026\)/);
+      assert.match(context, /\[current page only; cannot establish changed since\].*\(undated\)/);
+      assert.doesNotMatch(context, /Wed,|GMT|no date|\(unknown\)/);
+      assert.ok(requests.some((r) => r.includeDomains?.[0] === 'pipedrive.com'));
+    }
+    console.log('CRM canned regressions: five covered; overflow disclosed; same-value verdict instructions; stale/undated evidence labelled; dates formatted; official search requested');
+  } finally {
+    await rm(join(config.dataDir, 'sessions', `${sessionId}.jsonl`), { force: true });
+  }
+}
+
+testCrmRegressions().catch((err) => { console.error(err); process.exit(1); });

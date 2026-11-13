@@ -56,6 +56,17 @@ export type LlmEvent =
   | { type: 'tool_calls'; calls: ToolCall[]; opaque?: unknown }
   | { type: 'status'; message: string };
 
+/** One physical API attempt, including failed attempts and provider failover. */
+export interface ModelAttempt {
+  model: string;
+  kind: 'stream' | 'structured';
+  started_at_ms: number;
+  ttft_ms: number | null;
+  total_ms: number;
+  thinking_tokens: number | null;
+  failed: boolean;
+}
+
 export interface LlmProvider {
   readonly name: string;
   /** The model currently in use. Changes when the provider falls back. */
@@ -63,7 +74,7 @@ export interface LlmProvider {
   /** The model this provider was configured with, before any fallback. */
   readonly primaryModel: string;
   /** Request counters, for reporting. Reset per provider instance. */
-  readonly stats: { retries: number; fallbackUsed: boolean };
+  readonly stats: { retries: number; fallbackUsed: boolean; thinkingTokens?: number | null; modelAttempts?: ModelAttempt[] };
   stream(req: LlmRequest): AsyncIterable<LlmEvent>;
   structured<T>(req: LlmRequest): Promise<T>;
 }

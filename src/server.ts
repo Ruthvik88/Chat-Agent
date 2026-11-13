@@ -131,7 +131,8 @@ app.post('/api/chat', async (req, res) => {
             `model_call_2_ttft=${m.model_call_2_ttft_ms ?? '-'}ms thinking_tok=${m.thinking_tokens ?? '-'} ` +
             `total=${m.total_ms}ms model=${m.model_used} primary=${m.primary_model} ` +
             `retries=${m.retries} fallback=${m.fallback_used} searches=${m.search_calls} ` +
-            `stages[extract=${m.extract_ms} reverify_search=${m.search_ms}]`,
+            `steps=${m.step_count} model_total=${m.model_ms}ms overhead=${m.overhead_ms}ms unaccounted=${m.unaccounted_ms}ms ` +
+            `rounds=${JSON.stringify(m.search_rounds)} calls=${JSON.stringify(m.steps)}`,
         );
         send('done', { sessionId, ...m });
         continue;
@@ -194,6 +195,8 @@ function mapEvent(event: AgentEvent): string {
       return 'tool';
     case 'sources':
       return 'sources';
+    case 'error':
+      return 'error';
     case 'done':
       return 'done';
   }

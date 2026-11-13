@@ -90,8 +90,9 @@ async function main() {
   }
 
   console.log('\nMAX_REVERIFY_CLAIMS =', MAX_REVERIFY_CLAIMS);
-  console.log('worst case per re-verify =', MAX_REVERIFY_CLAIMS * 2, 'Tavily calls');
+  console.log('without inferred vendor domains per re-verify =', MAX_REVERIFY_CLAIMS * 2, 'Tavily calls');
   console.log('at search_depth=basic that is', MAX_REVERIFY_CLAIMS * 2, 'credits');
+  console.log('with inferred vendor domains: up to', MAX_REVERIFY_CLAIMS * 3, 'Tavily calls (before capacity retries)');
   await rm(join(config.dataDir, 'sessions', 'cost.jsonl'), { force: true });
   console.log('reverify cost: all assertions passed');
 }

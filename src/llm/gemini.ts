@@ -1,8 +1,8 @@
-import { GoogleGenAI, type Content, type FunctionDeclaration } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, FunctionCallingConfigMode, type Content, type FunctionDeclaration } from '@google/genai';
 
 import { config } from '../config';
 import { isTripped, tripBreaker } from './breaker';
-import type { LlmEvent, LlmProvider, LlmRequest, Turn } from './types';
+import type { LlmEvent, LlmProvider, LlmRequest, ModelAttempt, Turn } from './types';
 
 const MAX_ATTEMPTS = 3;
 const BACKOFF_MS = [400, 1200, 3000];
@@ -113,6 +113,12 @@ function isRetryable(err: unknown): boolean {
   return msg.includes('unavailable') || msg.includes('deadline') || msg.includes('timeout');
 }
 
+/** Gemini 3.8 cannot disable thinking; LOW is its minimum supported level. */
+function thinkingConfig(model: string) {
+  if (model.startsWith('gemini-2.5-flash')) return { thinkingBudget: 0 };
+  return { thinkingLevel: /^gemini-3\.[78]-flash/.test(model) ? ThinkingLevel.LOW : ThinkingLevel.MINIMAL };
+}
+
 /**
  * Gemini implementation of the LLM provider interface.
  *
@@ -135,7 +141,7 @@ export class GeminiProvider implements LlmProvider {
   /** Whether this request has already told the user about a model switch. */
   private announcedFallback = false;
   /** Counters for the request, reported back to the caller. */
-  readonly stats = { retries: 0, fallbackUsed: false };
+  readonly stats = { retries: 0, fallbackUsed: false, thinkingTokens: null as number | null, modelAttempts: [] as ModelAttempt[] };
 
   constructor(
     private readonly opts: {
@@ -235,6 +241,8 @@ export class GeminiProvider implements LlmProvider {
   }
 
   private async *streamOnce(model: string, req: LlmRequest): AsyncIterable<LlmEvent> {
+    const timing: ModelAttempt = { model, kind: 'stream', started_at_ms: Date.now(), ttft_ms: null, total_ms: 0, thinking_tokens: null, failed: true };
+    this.stats.modelAttempts.push(timing);
     const contents = toContents(req.turns);
     // The primary model gets a first-token deadline. A saturated model often
     // holds the connection open without answering, and that is indistinguishable
@@ -260,6 +268,7 @@ export class GeminiProvider implements LlmProvider {
         contents,
         config: {
           systemInstruction: req.system,
+          thinkingConfig: thinkingConfig(model),
           abortSignal: AbortSignal.any([
             AbortSignal.timeout(REQUEST_TIMEOUT_MS),
             controller.signal,
@@ -282,7 +291,7 @@ export class GeminiProvider implements LlmProvider {
                   },
                 ],
               }
-            : {}),
+            : { toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.NONE } } }),
         },
       });
 
@@ -293,12 +302,19 @@ export class GeminiProvider implements LlmProvider {
       const seenCalls = new Set<string>();
 
       for await (const chunk of stream) {
+        if (chunk.usageMetadata?.thoughtsTokenCount !== undefined) {
+          // Stream usage is cumulative, not a per-chunk delta.
+          timing.thinking_tokens = chunk.usageMetadata.thoughtsTokenCount;
+        }
         const content = chunk.candidates?.[0]?.content;
         if (content) modelContents.push(content);
         // Any output at all means the model is answering, so the first-token
         // deadline is satisfied. A thought counts: it is still a live model.
         if (content?.parts?.length) clearDeadline();
         for (const part of content?.parts ?? []) {
+          if (timing.ttft_ms === null && !part.thought && (part.text || part.functionCall)) {
+            timing.ttft_ms = Date.now() - timing.started_at_ms;
+          }
           if (part.functionCall) {
             const key = `${part.functionCall.id ?? ''}:${part.functionCall.name}`;
             if (seenCalls.has(key)) continue;
@@ -317,6 +333,7 @@ export class GeminiProvider implements LlmProvider {
         }
       }
 
+      timing.failed = false;
       if (calls.length) {
         yield { type: 'tool_calls', calls, opaque: modelContents };
       }
@@ -326,6 +343,8 @@ export class GeminiProvider implements LlmProvider {
       if (ttftExpired) throw new FirstTokenTimeoutError(model);
       throw err;
     } finally {
+      timing.total_ms = Date.now() - timing.started_at_ms;
+      if (timing.thinking_tokens !== null) this.stats.thinkingTokens = (this.stats.thinkingTokens ?? 0) + timing.thinking_tokens;
       clearDeadline();
     }
   }
@@ -350,12 +369,15 @@ export class GeminiProvider implements LlmProvider {
     let feedback = '';
     for (;;) {
       const turns = feedback ? withFeedback(req.turns, feedback) : req.turns;
+      const timing: ModelAttempt = { model, kind: 'structured', started_at_ms: Date.now(), ttft_ms: null, total_ms: 0, thinking_tokens: null, failed: true };
+      this.stats.modelAttempts.push(timing);
       try {
         const res = await this.ai.models.generateContent({
           model,
           contents: toContents(turns),
           config: {
             systemInstruction: req.system,
+            thinkingConfig: thinkingConfig(model),
             abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
             // One attempt per call; the retry policy lives in this class.
             httpOptions: { retryOptions: { attempts: 1 } },
@@ -363,10 +385,11 @@ export class GeminiProvider implements LlmProvider {
             responseSchema: req.responseSchema as never,
           },
         });
+        timing.thinking_tokens = res.usageMetadata?.thoughtsTokenCount ?? null;
         const text = res.text ?? '';
         const parsed = JSON.parse(text) as T;
         const problem = validateAgainstSchema(parsed, req.responseSchema);
-        if (!problem) return parsed;
+        if (!problem) { timing.failed = false; return parsed; }
         feedback = `Your previous reply did not satisfy the schema: ${problem}. Reply with valid JSON only.`;
       } catch (err) {
         if (!isRetryable(err)) {
@@ -393,6 +416,9 @@ export class GeminiProvider implements LlmProvider {
           continue;
         }
         throw new Error(errorMessage(err));
+      } finally {
+        timing.total_ms = Date.now() - timing.started_at_ms;
+        if (timing.thinking_tokens !== null) this.stats.thinkingTokens = (this.stats.thinkingTokens ?? 0) + timing.thinking_tokens;
       }
 
       // The reply parsed but did not match the schema: retry once with feedback.

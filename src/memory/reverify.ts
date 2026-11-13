@@ -1,13 +1,14 @@
+import { rankSources, sourceKey } from '../search/results';
 import { zonedParts, type DateRef } from './dates';
 import { renderRecalledContext, tokenize } from './recall';
 import type { SessionStore, Source, StoredTurn } from './store';
 
-/** At most this many claims are re-verified per turn; each costs two searches. */
-export const MAX_REVERIFY_CLAIMS = 4;
+/** At most this many claims are re-verified per turn; each costs up to three searches. */
+export const MAX_REVERIFY_CLAIMS = 6;
 
 /** Progress of the re-verify flow, so the client can show what is happening. */
 export type ReverifyEvent =
-  | { type: 'status'; message: string }
+  | { type: 'status'; message: string; stage?: 'search' }
   | { type: 'report'; report: ReverifyReport };
 
 export interface ClaimCheck {
@@ -28,6 +29,8 @@ export interface ReverifyReport {
   /** Local day of the original answer, YYYY-MM-DD. */
   answerDate: string;
   checks: ClaimCheck[];
+  /** Extracted claims beyond the search cap, never silently omitted. */
+  uncheckedClaims?: string[];
   /** URLs of the pages consulted while re-verifying. */
   sources: Source[];
   /** The queries this flow already ran, so the agent does not repeat them. */
@@ -58,6 +61,7 @@ const CLAIM_SCHEMA = {
         properties: {
           claim: { type: 'string', description: 'A single checkable factual statement.' },
           subject: { type: 'string', description: 'The product, company or topic the claim is about.' },
+          vendorDomain: { type: 'string', description: 'Official vendor domain if confidently inferable, otherwise empty.' },
           queries: {
             type: 'array',
             items: { type: 'string' },
@@ -80,8 +84,9 @@ Rules:
   product and a price for another, that is two claims and both must appear. A claim that is left out
   is never checked, and the user is never told about it.
 - For each claim give one or two web search queries that would confirm whether it still holds.
-  A good query names the subject and the thing being checked, e.g. "Neon pricing per month" or "Neon pricing change 2026".
-- Return at most four claims: the most checkable and most consequential ones.
+  Every query must name the entity AND its product category to avoid homonyms, e.g. "Neon serverless Postgres pricing" or "Railway PaaS Postgres pricing". Include the category in subject too, so fallback and vendor-domain searches remain specific.
+- Do not cap extraction: return all checkable claims so any claims beyond the search budget can be disclosed.
+- For vendor claims, include vendorDomain when confidently inferable (e.g. Pipedrive: pipedrive.com, Freshsales: freshworks.com). Otherwise use an empty string. Never guess a domain.
 - Return an empty list if the text contains no checkable claims.`;
 
 interface LlmLike {
@@ -100,7 +105,8 @@ interface SearchLike {
     topic?: 'general' | 'news';
     maxResults?: number;
     maxAgeHours?: number;
-  }): Promise<Array<{ title: string; url: string; content: string; publishedDate?: string }>>;
+    includeDomains?: string[];
+  }): Promise<Array<{ title: string; url: string; content: string; publishedDate?: string; score?: number; official?: boolean }>>;
 }
 
 /** Finds the assistant turn the user is most likely referring back to. */
@@ -264,13 +270,14 @@ export async function* reverifyAnswer(opts: {
   // 1. Extract the checkable claims, and the queries to check them, in one call.
   yield { type: 'status', message: 'Checking your earlier answer…' };
   const extractStart = Date.now();
-  let claims: Array<{ claim: string; subject: string; queries: string[] }> = [];
+  let claims: Array<{ claim: string; subject: string; queries: string[]; vendorDomain?: string }> = [];
+  let uncheckedClaims: string[] = [];
   // A failed extraction is not the same as an answer with nothing in it, and
   // the user must not be told the second when it is the first.
   let extractFailed = false;
   try {
     const extracted = await llm.structured<{
-      claims: Array<{ claim: string; subject: string; queries: string[] }>;
+      claims: Array<{ claim: string; subject: string; queries: string[]; vendorDomain?: string }>;
     }>({
       system: EXTRACT_SYSTEM,
       turns: [{ role: 'user', text: `Previous answer:\n\n${earlier.text}` }],
@@ -280,10 +287,12 @@ export async function* reverifyAnswer(opts: {
       .map((c) => ({
         claim: c.claim,
         subject: c.subject,
+        vendorDomain: c.vendorDomain?.trim().toLowerCase(),
         queries: (c.queries ?? []).filter((q) => typeof q === 'string' && q.trim()).slice(0, 2),
       }))
-      .filter((c) => c.claim?.trim())
-      .slice(0, MAX_REVERIFY_CLAIMS);
+      .filter((c) => c.claim?.trim());
+    uncheckedClaims = claims.slice(MAX_REVERIFY_CLAIMS).map((c) => c.claim);
+    claims = claims.slice(0, MAX_REVERIFY_CLAIMS);
   } catch {
     extractFailed = true;
     claims = [];
@@ -314,11 +323,12 @@ export async function* reverifyAnswer(opts: {
   //   b) a freshness search (max_age_hours, no window) reads the *current*
   //      content of pages that are edited in place, such as pricing pages,
   //      which a publish-date window would otherwise drop.
-  const perClaim: Array<{ claim: string; subject: string; hits: string[] }> = [];
+  const perClaim: Array<{ claim: string; subject: string; hits: Array<{ key: string; text: string }> }> = [];
   const sources: Source[] = [];
 
   yield {
     type: 'status',
+    stage: 'search',
     message: `Searching for changes to ${claims.length} claim${claims.length === 1 ? '' : 's'} since ${answerDate}`,
   };
 
@@ -327,11 +337,19 @@ export async function* reverifyAnswer(opts: {
   const queries: string[] = [];
   await Promise.all(
     claims.map(async (c) => {
-      const hits: string[] = [];
+      const hits: Array<{ key: string; text: string }> = [];
+      const seenPages = new Set<string>();
       const collect = (label: string, results: Awaited<ReturnType<typeof search.search>>) => {
-        for (const r of results) {
-          hits.push(`${label} ${r.title} (${r.publishedDate ?? 'no date'}) ${r.url}\n${r.content.slice(0, 400)}`);
-          sources.push({ title: r.title, url: r.url, publishedDate: r.publishedDate });
+        for (const r of rankSources(results, 5)) {
+          const key = sourceKey(r.url);
+          if (seenPages.has(key)) continue;
+          seenPages.add(key);
+          const date = r.publishedDate ? new Date(r.publishedDate) : null;
+          const inWindow = date && Number.isFinite(date.getTime())
+            && date.getTime() > new Date(earlier.ts).getTime() && date.getTime() <= now.getTime();
+          const timing = inWindow ? 'dated after original answer' : 'current page only; cannot establish changed since';
+          hits.push({ key, text: `${label} [${timing}] ${r.title} (${formatEvidenceDate(r.publishedDate)}) ${r.url}\n${r.content.slice(0, 500)}` });
+          sources.push({ title: r.title, url: r.url, publishedDate: r.publishedDate, score: r.score, official: r.official });
         }
       };
 
@@ -340,7 +358,10 @@ export async function* reverifyAnswer(opts: {
       const freshQuery = c.queries[1] ?? `${c.subject} pricing current`;
       queries.push(windowedQuery, freshQuery);
 
-      const [windowed, fresh] = await Promise.allSettled([
+      const domain = c.vendorDomain && /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(c.vendorDomain)
+        ? c.vendorDomain : undefined;
+      if (domain) queries.push(`${c.subject} pricing current site:${domain}`);
+      const [windowed, fresh, official] = await Promise.allSettled([
         search.search({
           query: windowedQuery,
           startDate: answerDate,
@@ -354,9 +375,17 @@ export async function* reverifyAnswer(opts: {
           topic: 'general',
           maxResults: 4,
         }),
+        ...(domain ? [search.search({
+          query: `${c.subject} pricing current site:${domain}`,
+          includeDomains: [domain],
+          maxAgeHours: 24,
+          topic: 'general',
+          maxResults: 4,
+        })] : []),
       ]);
 
-      if (windowed.status === 'fulfilled') collect('[announced since]', windowed.value);
+      if (official?.status === 'fulfilled') collect('[vendor-domain search]', official.value);
+      if (windowed.status === 'fulfilled') collect('[date-window search]', windowed.value);
       if (fresh.status === 'fulfilled') collect('[current page]', fresh.value);
       // A search failure for one claim must not sink the whole report.
       perClaim.push({ claim: c.claim, subject: c.subject, hits });
@@ -366,14 +395,16 @@ export async function* reverifyAnswer(opts: {
 
   // 3. No verdict call: the claims and their raw evidence go to the answer
   //    model, which reports changed / unchanged / could not verify itself.
+  const selectedSources = rankSources(sources);
+  const selectedKeys = new Set(selectedSources.map((s) => sourceKey(s.url)));
   const checks: ClaimCheck[] = claims.map((c) => {
     const hits = perClaim.find((p) => p.claim === c.claim)?.hits ?? [];
     return {
       claim: c.claim,
       subject: c.subject,
       queries: c.queries,
-      evidence: hits,
-      hasEvidence: hits.length > 0,
+      evidence: hits.filter((h) => selectedKeys.has(h.key)).map((h) => h.text),
+      hasEvidence: hits.some((h) => selectedKeys.has(h.key)),
     };
   });
 
@@ -383,11 +414,18 @@ export async function* reverifyAnswer(opts: {
       answeredAt: earlier.ts,
       answerDate,
       checks,
-      sources,
+      uncheckedClaims,
+      sources: selectedSources,
       queries,
       timings,
     },
   };
+}
+
+function formatEvidenceDate(value?: string): string {
+  const date = value ? new Date(value) : null;
+  if (!date || !Number.isFinite(date.getTime())) return 'undated';
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(date);
 }
 
 /** Renders a re-verify report into a context block for the model. */
@@ -429,9 +467,18 @@ export function renderReverifyContext(report: ReverifyReport): string {
       '</reverify>',
     ].join('\n');
   }
+  const evidencePages = new Map<string, number>();
   const lines = report.checks.map((c) => {
     const evidence = c.evidence.length
-      ? c.evidence.map((e) => `    ${e}`).join('\n')
+      ? c.evidence.map((e) => {
+        const url = e.match(/https?:\/\/\S+/)?.[0];
+        const key = url ? sourceKey(url) : e;
+        const existing = evidencePages.get(key);
+        if (existing) return `    See evidence source ${existing} above (same page, not another result).`;
+        const id = evidencePages.size + 1;
+        evidencePages.set(key, id);
+        return `    Evidence source ${id}: ${e}`;
+      }).join('\n')
       : '    (no search results for this claim)';
     return `- Claim: ${c.claim}\n  Evidence:\n${evidence}`;
   });
@@ -440,13 +487,19 @@ export function renderReverifyContext(report: ReverifyReport): string {
     `The user's earlier answer, given at ${report.answeredAt} (local day ${report.answerDate}), was checked`,
     'against fresh web search results.',
     'Report the result as a markdown table with exactly three columns: Claim, Verdict, Evidence.',
-    'One row per claim, and nothing else — no intro paragraph and no summary after the table.',
+    'One row per checked claim. If there are unchecked claims listed below, add a sentence after the table naming every one as NOT checked; otherwise no intro or summary.',
     'The Verdict cell is exactly one of: Changed, Unchanged, Could not verify.',
-    'Changed means the evidence contradicts the claim, Unchanged means it confirms it, and',
-    'Could not verify means the evidence does not address it.',
-    'The Evidence cell gives the date of the evidence and a markdown link to the source URL.',
+    'Unchanged when evidence restates the same value (including equivalent seat/user and month wording).',
+    'Changed only when evidence states a different value AND is dated after the original answer, within the checking window.',
+    'Evidence that is undated or older than the answer can support current page says X, never changed since.',
+    'Otherwise use Could not verify. A different plan name alone does not prove a price changed.',
+    'For each row consult vendor-domain search evidence first. Cite a relevant official vendor page in preference to blogs or forums, even if the vendor page is undated or older (it can confirm a current value). Use third-party evidence only if official evidence does not address the claim.',
+    'Every price/number anywhere in the answer (including Claim cells) must carry a supporting source link; otherwise drop it or explicitly mark it unverified.',
+    'The Evidence cell gives the date as 12 Nov 2026 (or undated) and a markdown link to the source URL.',
     'If a claim has no evidence at all, its verdict is Could not verify — never guess.',
     ...lines,
+    ...(report.uncheckedClaims?.length ? ['NOT checked (search cap):', ...report.uncheckedClaims.map((c) => `- ${c}`)] : []),
+    'Final output check: every price/number must have a supporting markdown link in its cell or be explicitly labelled unverified. Use the formatted evidence dates above. Prefer relevant official vendor evidence. Do not add a summary or claim there were no releases: absence of search evidence does not establish that nothing shipped. Name every NOT checked claim after the table if any were listed.',
     '</reverify>',
   ].join('\n');
 }

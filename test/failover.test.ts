@@ -85,6 +85,9 @@ async function main() {
 
     assert.equal(fake.sent.length, 2, 'a daily-quota 429 must not be retried on the same model');
     assert.equal(provider.model, 'gemini-3.1-flash-lite');
+    assert.equal(provider.stats.modelAttempts.length, 2, 'both failed primary and fallback API attempts are timed');
+    assert.equal(provider.stats.modelAttempts[0].failed, true);
+    assert.equal(provider.stats.modelAttempts[1].failed, false);
     const status = events.find((e) => e.type === 'status');
     assert.ok(status, 'the user must be told about the switch');
     assert.match(status.message, /quota/i);

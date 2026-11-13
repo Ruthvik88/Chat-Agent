@@ -29,11 +29,11 @@ function fakeApi(responses: Array<{ text: string; functionCall?: { name: string;
       }
       const payload = {
         candidates: [{ content: { role: 'model', parts }, finishReason: 'STOP' }],
-        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 },
+        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 17, thoughtsTokenCount: 2 },
       };
       // Streaming uses SSE framing; non-streaming returns plain JSON.
       if (String(url).includes('streamGenerateContent')) {
-        return new Response(`data: ${JSON.stringify(payload)}\n\n`, {
+        return new Response(`data: ${JSON.stringify(payload)}\n\ndata: ${JSON.stringify({ usageMetadata: payload.usageMetadata })}\n\n`, {
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
         });
@@ -88,6 +88,11 @@ async function main() {
 
   // The request must declare exactly one function.
   const first = sent[0];
+  assert.equal(first.generationConfig.thinkingConfig.thinkingLevel, 'LOW', '3.8 minimum supported thinking level');
+  assert.equal(provider.stats.thinkingTokens, 2, 'cumulative streamed usage must not be double counted');
+  assert.equal(provider.stats.modelAttempts.length, 1);
+  assert.equal(provider.stats.modelAttempts[0].failed, false);
+  assert.ok(provider.stats.modelAttempts[0].ttft_ms !== null);
   assert.equal(first.tools.length, 1);
   assert.equal(first.tools[0].functionDeclarations.length, 1);
   assert.equal(first.tools[0].functionDeclarations[0].name, 'web_search');
@@ -103,11 +108,12 @@ async function main() {
   });
 
   const events2: any[] = [];
-  for await (const e of provider.stream({ ...request, turns })) events2.push(e);
+  for await (const e of provider.stream({ ...request, turns, tools: [] })) events2.push(e);
   assert.equal(events2.filter((e) => e.type === 'text').map((e) => e.text).join(''), 'Neon now charges $25 per month.');
 
   // The second request must carry the model's functionCall part and the functionResponse.
   const second = sent[1];
+  assert.equal(second.toolConfig.functionCallingConfig.mode, 'NONE', 'final synthesis must not call tools');
   const roles = second.contents.map((c: any) => c.role);
   assert.deepEqual(roles, ['user', 'model', 'user']);
   const fnResponse = second.contents[2].parts[0].functionResponse;
@@ -115,6 +121,8 @@ async function main() {
   assert.equal(fnResponse.id, 'fc-1');
   assert.deepEqual(fnResponse.response.results[0].url, 'u');
 
+  assert.equal(provider.stats.thinkingTokens, 4);
+  assert.equal(provider.stats.modelAttempts.length, 2);
   restore();
 
   // --- Structured call: JSON mode with a schema, and a retry when it fails ---
@@ -137,6 +145,11 @@ async function main() {
   // The first reply was invalid, so the provider retried once.
   assert.equal(sse.sent.length, 2);
   // The retry must ask for JSON mode with the schema.
+  assert.equal(sse.sent[0].generationConfig.thinkingConfig.thinkingLevel, 'MINIMAL');
+  assert.equal(structuredProvider.stats.modelAttempts.length, 2, 'failed JSON attempt is included');
+  assert.equal(structuredProvider.stats.modelAttempts[0].failed, true);
+  assert.equal(structuredProvider.stats.modelAttempts[0].ttft_ms, null, 'non-streaming TTFT is unavailable, not fabricated');
+  assert.equal(structuredProvider.stats.thinkingTokens, 4);
   assert.equal(sse.sent[0].generationConfig.responseMimeType, 'application/json');
   assert.ok(sse.sent[0].generationConfig.responseSchema);
   sse.restore();

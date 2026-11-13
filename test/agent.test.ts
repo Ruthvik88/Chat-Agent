@@ -93,7 +93,7 @@ async function main() {
         ],
       },
     ],
-    [{ type: 'text', text: 'HubSpot and Salesforce both changed pricing.' }],
+    [{ type: 'text', text: 'HubSpot and Salesforce both changed pricing. [Source](https://example.com/hubspot%20pricing)' }],
   ]);
   const search = new FakeSearch();
 
@@ -156,12 +156,18 @@ async function testStepExhaustion() {
     events.push(e);
   }
 
-  // The search budget is four per turn, so only four searches run.
-  assert.equal(search.seen.length, 4, `expected 4 searches, got ${search.seen.length}`);
+  // Three normal steps: at most two search rounds, then synthesis without tools.
+  assert.equal(search.seen.length, 2, `expected 2 searches, got ${search.seen.length}`);
+  const done = events.find((e) => e.type === 'done');
+  assert.ok(done?.type === 'done');
+  assert.equal(done.metrics.step_count, 3);
 
   // The final call must drop the tools so the model cannot loop again.
   const last = llm.calls[llm.calls.length - 1];
   assert.equal(last.tools?.length, 0, 'the final call must not offer tools');
+  const synthesis = llm.calls[2];
+  assert.equal(synthesis.tools?.length, 0, 'third loop step disables tools');
+  assert.match(synthesis.turns.at(-1)!.text!, /Stop searching and answer now/);
 
   // And there must be an answer, not an empty stream.
   const text = events.filter((e) => e.type === 'text').map((e) => e.text).join('');
@@ -268,3 +274,142 @@ testDoneMetrics().catch((err) => {
   console.error(err);
   process.exit(1);
 });
+
+async function testRankedParallelSourcesAndFollowup() {
+  const sessionId = `ranked-${SESSION}`;
+  const store = new SessionStore();
+  const llm = new ScriptedLlm([
+    [{ type: 'tool_calls', calls: [
+      { name: 'web_search', args: { query: 'Neon serverless Postgres pricing', include_domains: ['neon.tech'] } },
+      { name: 'web_search', args: { query: 'Railway PaaS Postgres pricing' } },
+    ] }],
+    [{ type: 'text', text: 'Neon offers Postgres. [Neon](https://neon.tech/pricing)' }],
+  ]);
+  const search: SearchProvider = { name: 'canned', async search(req) {
+    if (req.query.startsWith('Neon')) await new Promise((r) => setTimeout(r, 30));
+    return [
+      { title: 'Pricing', url: req.query.startsWith('Neon') ? 'https://neon.tech/pricing' : 'http://www.neon.tech/pricing/?utm=x', content: 'Postgres pricing', score: 0.7, official: req.query.startsWith('Neon') },
+      ...Array.from({ length: 5 }, (_, i) => ({ title: `Blog ${i}`, url: `https://blog.com/${i}?q=${req.query}`, content: 'Postgres pricing', score: 0.99 - i / 100 })),
+    ];
+  } };
+  try {
+    const events = [];
+    for await (const e of runAgent({ sessionId, message: 'Compare Neon and Railway Postgres prices', timezone: 'Asia/Kolkata' }, { store, llm, search })) events.push(e);
+    const results = llm.calls[1].turns.flatMap((t) => t.toolResults ?? []).flatMap((t) => JSON.parse(t.output).results);
+    assert.equal(results.length, 6, 'parallel results deduped before model sees them');
+    const shortlist = llm.calls[1].turns.flatMap((t) => t.toolResults ?? []).map((t) => JSON.parse(t.output).citationSources).find(Boolean);
+    assert.equal(shortlist.length, 6, 'ranked citation shortlist reaches the provider as tool data');
+    assert.equal(shortlist[0].url, 'https://neon.tech/pricing');
+    assert.equal(new Set(results.map((r: SearchResult) => r.url)).size, 6);
+    const sourceEvent = events.find((e) => e.type === 'sources');
+    assert.ok(sourceEvent?.type === 'sources');
+    assert.equal(sourceEvent.sources.length, 6);
+    assert.equal(sourceEvent.sources[0].url, 'https://neon.tech/pricing', 'official wins despite lower score and slower search');
+    assert.equal(store.get(sessionId).at(-1)!.sources!.length, 6);
+    const followup = new ScriptedLlm([[{ type: 'text', text: 'See [Neon pricing](https://neon.tech/pricing).' }]]);
+    const followEvents = [];
+    for await (const e of runAgent({ sessionId, message: 'and the other one?', timezone: 'Asia/Kolkata' }, { store, llm: followup, search })) followEvents.push(e);
+    const req = followup.calls[0];
+    assert.match(req.system, /Every factual claim.*inline markdown citation/);
+    assert.match(req.system, /Railway PaaS Postgres pricing/);
+    assert.match(req.turns.at(-1)!.text!, /Saved evidence URLs.*\n.*https:\/\/neon.tech\/pricing/);
+    assert.ok(followEvents.some((e) => e.type === 'sources' && e.sources.some((s) => s.url === 'https://neon.tech/pricing')));
+    console.log('parallel source ranking/cap/dedupe and follow-up citation context: all assertions passed');
+  } finally { await rm(join(config.dataDir, 'sessions', `${sessionId}.jsonl`), { force: true }); }
+}
+
+testRankedParallelSourcesAndFollowup().catch((err) => { console.error(err); process.exit(1); });
+
+async function testMissingCitationRepair() {
+  const sessionId = `repair-${SESSION}`;
+  const store = new SessionStore();
+  const source = 'https://example.com/Railway%20PaaS%20Postgres%20pricing';
+  const llm = new ScriptedLlm([
+    [{ type: 'tool_calls', calls: [{ name: 'web_search', args: { query: 'Railway PaaS Postgres pricing' } }] }],
+    [{ type: 'text', text: 'Railway costs $5 [example.com].' }],
+    [{ type: 'text', text: `Railway costs $5. [Source](${source})` }],
+  ]);
+  try {
+    let answer = '';
+    for await (const e of runAgent({ sessionId, message: 'and the other one?', timezone: 'Asia/Kolkata' }, { store, llm, search: new FakeSearch() })) if (e.type === 'text') answer += e.text;
+    assert.equal(answer, `Railway costs $5. [Source](${source})`);
+    assert.doesNotMatch(answer, /\[example.com\]/, 'uncited draft must never be streamed');
+    assert.equal(llm.calls.length, 3, 'one bounded citation repair');
+    assert.equal(llm.calls[2].tools!.length, 0);
+    // A model that keeps returning missing or invented links fails closed.
+    for (const bad of ['Still no links.', 'Made up. [Source](https://invented.test)']) {
+      const failing = new ScriptedLlm([
+        [{ type: 'tool_calls', calls: [{ name: 'web_search', args: { query: 'Railway PaaS Postgres pricing' } }] }],
+        [{ type: 'text', text: 'Uncited factual answer.' }],
+        [{ type: 'text', text: bad }],
+      ]);
+      let output = '';
+      for await (const e of runAgent({ sessionId, message: 'and the other one?', timezone: 'Asia/Kolkata' }, { store, llm: failing, search: new FakeSearch() })) if (e.type === 'text') output += e.text;
+      assert.match(output, /could not produce an answer with verified source links/);
+      assert.doesNotMatch(output, /Uncited factual|Made up|Still no links/);
+    }
+    console.log('missing citation repair: linked answer only; failed/invented-link repair withheld');
+  } finally { await rm(join(config.dataDir, 'sessions', `${sessionId}.jsonl`), { force: true }); }
+}
+
+testMissingCitationRepair().catch((err) => { console.error(err); process.exit(1); });
+
+async function testEveryStageIsTimed() {
+  const sessionId = `timings-${SESSION}`;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  class SlowStore extends SessionStore {
+    override async append(...args: Parameters<SessionStore['append']>) { await sleep(12); return super.append(...args); }
+  }
+  const store = new SlowStore();
+  const scripted = new ScriptedLlm([
+    [{ type: 'tool_calls', calls: [
+      { name: 'web_search', args: { query: 'one' } },
+      { name: 'web_search', args: { query: 'two' } },
+    ] }],
+    [{ type: 'text', text: 'Unlinked draft [example.com].' }],
+    [{ type: 'text', text: 'Supported answer. [Source](https://example.com/one)' }],
+  ]);
+  const llm: LlmProvider = {
+    ...scripted,
+    name: scripted.name, model: scripted.model, primaryModel: scripted.primaryModel, stats: scripted.stats,
+    structured: scripted.structured.bind(scripted),
+    async *stream(req) { await sleep(20); yield* scripted.stream(req); await sleep(15); },
+  };
+  const search = new FakeSearch(); search.delayMs = 40;
+  try {
+    const events = [];
+    const start = Date.now(); let visibleAt = 0;
+    for await (const e of runAgent({ sessionId, message: 'Look up these two database products', timezone: 'Asia/Kolkata' }, { store, llm, search })) {
+      if (e.type === 'text' && !visibleAt) visibleAt = Date.now() - start;
+      events.push(e);
+    }
+    const done = events.find((e) => e.type === 'done'); assert.ok(done?.type === 'done');
+    const m = done.metrics;
+    assert.deepEqual(m.steps.map((s) => s.phase), ['loop', 'loop', 'citation_repair']);
+    assert.equal(m.step_count, 2); assert.equal(m.model_call_count, 3);
+    assert.ok(m.steps.every((s) => s.model_ms >= 30 && s.model_ttft_ms! >= 15 && !s.failed));
+    assert.equal(m.search_rounds.length, 1); assert.equal(m.search_rounds[0].search_calls, 2);
+    assert.ok(m.search_ms >= 35 && m.search_ms < 100, `parallel search round wall time ${m.search_ms}`);
+    assert.equal(m.steps[0].search_ms, m.search_ms);
+    assert.ok(m.overhead_ms >= 20, 'persistence delays are measured as local overhead');
+    assert.equal(m.model_ms, m.steps.reduce((n, s) => n + s.model_ms, 0));
+    assert.equal(m.total_ms, m.model_ms + m.search_ms + m.overhead_ms + m.unaccounted_ms);
+    assert.equal(m.unaccounted_ms, 0);
+    assert.ok(Math.abs(visibleAt - m.ttft_ms!) < 20, 'TTFT measures emitted answer, including citation repair');
+    assert.ok(m.ttft_ms! >= m.steps[2].start_ms + m.steps[2].model_ms, 'buffered repair is counted before visible output');
+
+    const failing: LlmProvider = { ...llm, async *stream() { await sleep(20); throw new Error('simulated provider failure'); } };
+    const failed = [];
+    for await (const e of runAgent({ sessionId, message: 'Look up a database product', timezone: 'Asia/Kolkata' }, { store, llm: failing, search })) failed.push(e);
+    const failedDone = failed.find((e) => e.type === 'done'); assert.ok(failedDone?.type === 'done');
+    assert.equal(failedDone.metrics.steps.length, 1);
+    assert.equal(failedDone.metrics.steps[0].failed, true);
+    assert.equal(failedDone.metrics.ttft_ms, null);
+    assert.equal(failedDone.metrics.unaccounted_ms, 0);
+    assert.match(failedDone.metrics.error!, /simulated provider failure/);
+    assert.ok(failed.some((e) => e.type === 'error'));
+    console.log('all-stage timing: extraction, model calls, parallel searches, repair, failures and visible TTFT accounted');
+  } finally { await rm(join(config.dataDir, 'sessions', `${sessionId}.jsonl`), { force: true }); }
+}
+
+testEveryStageIsTimed().catch((err) => { console.error(err); process.exit(1); });

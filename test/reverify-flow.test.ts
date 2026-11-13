@@ -99,7 +99,7 @@ class ScriptedSearchLlm implements LlmProvider {
 }
 
 async function main() {
-  // --- 4. Claims are capped at 4, and each claim costs two searches ---
+  // --- 4. Claims are capped at 6, and each claim costs two searches ---
   const store = new SessionStore();
   await store.init();
   await store.append(SESSION, {
@@ -130,9 +130,12 @@ async function main() {
     else report = event.report;
   }
 
-  assert.equal(MAX_REVERIFY_CLAIMS, 4);
-  assert.equal(report!.checks.length, 4, 'only four claims may be checked');
-  assert.equal(search.requests.length, 8, 'four claims times two searches each');
+  assert.equal(MAX_REVERIFY_CLAIMS, 6);
+  assert.equal(report!.checks.length, 6, 'six claims may be checked');
+  assert.equal(search.requests.length, 12, 'six claims times two searches each');
+
+  assert.deepEqual(report!.uncheckedClaims, ['Claim number 7', 'Claim number 8']);
+  assert.match(renderReverifyContext(report!), /NOT checked.*\n- Claim number 7\n- Claim number 8/);
 
   // --- 4b. The searches run in parallel ---
   // Ten 200ms searches in parallel take ~200ms; serial would take ~2s.
@@ -152,7 +155,7 @@ async function main() {
     // drain
   }
   const elapsed = Date.now() - t0;
-  assert.equal(slowSearch.requests.length, 8);
+  assert.equal(slowSearch.requests.length, 12);
   assert.ok(elapsed < 1200, `expected parallel re-verify searches, took ${elapsed}ms`);
 
   // --- 4c. Each stage reports progress (there is no verdict stage any more) ---
@@ -294,8 +297,14 @@ async function testReverifySearchesAreCounted() {
 
   const done = events.find((e) => e.type === 'done');
   assert.ok(done);
-  // Two searches per claim, four claims.
-  assert.equal((done as any).metrics.search_calls, 8, 're-verify searches must be counted');
+  // Two searches per claim, six claims (no inferred vendor domains in this stub).
+  assert.equal((done as any).metrics.search_calls, 12, 're-verify searches must be counted');
+  const metrics = (done as any).metrics;
+  assert.equal(metrics.steps[0].phase, 'extract');
+  assert.equal(metrics.model_call_1_ms, metrics.steps[0].model_ms, 'legacy first-call metric includes extraction');
+  assert.equal(metrics.search_rounds[0].phase, 'reverify');
+  assert.equal(metrics.search_rounds[0].search_calls, 12);
+  assert.equal(metrics.unaccounted_ms, 0);
 
   await rm(join(config.dataDir, 'sessions', 'counted-' + SESSION_SUFFIX + '.jsonl'), { force: true });
   console.log('reverify searches counted: all assertions passed');

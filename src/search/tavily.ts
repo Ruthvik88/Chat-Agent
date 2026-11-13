@@ -1,5 +1,9 @@
+import { rankSources } from './results';
 import { config } from '../config';
 import { SearchError, type SearchProvider, type SearchRequest, type SearchResult } from './types';
+
+/** Precision-first cutoff for narrow entity searches; scores are not probabilities. */
+export const MIN_RELEVANCE_SCORE = 0.6;
 
 /**
  * Tavily Search adapter.
@@ -23,15 +27,15 @@ export class TavilySearchProvider implements SearchProvider {
 
     const body: Record<string, unknown> = {
       query: req.query,
-      // basic is 1 credit, advanced is 2. The re-verify flow runs two searches
-      // per claim, so the difference is 8 credits a turn at the cap.
+      // basic is 1 credit, advanced is 2.
       search_depth: 'basic',
       topic: req.topic ?? 'general',
-      max_results: req.maxResults ?? 6,
+      max_results: Math.max(1, Math.min(5, req.maxResults ?? 5)),
       include_published_date: true,
       include_answer: false,
       include_raw_content: false,
     };
+    if (req.includeDomains?.length) body.include_domains = req.includeDomains;
     if (req.startDate) body.start_date = req.startDate;
     if (req.endDate) body.end_date = req.endDate;
     if (req.filterByPublishedDate) body.filter_by_published_date = true;
@@ -69,12 +73,20 @@ export class TavilySearchProvider implements SearchProvider {
       }>;
     };
 
-    return (json.results ?? []).map((r) => ({
-      title: r.title ?? '',
-      url: r.url ?? '',
-      content: r.content ?? '',
-      publishedDate: r.published_date,
-      score: r.score,
-    }));
+    return rankSources((json.results ?? [])
+      .filter((r) => typeof r.score === 'number' && Number.isFinite(r.score) && r.score >= MIN_RELEVANCE_SCORE && r.url)
+      .map((r) => ({
+        title: r.title ?? '',
+        url: r.url ?? '',
+        content: (r.content ?? '').slice(0, 500),
+        publishedDate: r.published_date,
+        score: r.score,
+        official: (req.includeDomains ?? []).some((domain) => {
+          try {
+            const host = new URL(r.url!).hostname.toLowerCase();
+            return host === domain.toLowerCase() || host.endsWith(`.${domain.toLowerCase()}`);
+          } catch { return false; }
+        }),
+      })), 5);
   }
 }

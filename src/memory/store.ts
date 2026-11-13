@@ -7,6 +7,8 @@ export interface Source {
   title: string;
   url: string;
   publishedDate?: string;
+  score?: number;
+  official?: boolean;
 }
 
 export interface StoredTurn {
