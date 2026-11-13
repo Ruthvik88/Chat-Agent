@@ -1,3 +1,4 @@
+import './setup';
 import assert from 'node:assert/strict';
 
 import { escapeHtml, renderMarkdown, renderSourcesHtml, safeUrl } from '../src/public/markdown.js';
@@ -131,7 +132,9 @@ async function main() {
     assertInert(html, 'sources list');
     assert.match(html, /&lt;img/, 'a source title must be escaped');
     assert.equal((html.match(/<a /g) ?? []).length, 2, 'only the http(s) sources may be linked');
-    assert.match(html, /2026-11-04/, 'the published date must be shown');
+    assert.match(html, /2026-11-04/, 'the raw date remains in datetime');
+    assert.match(html, />4 Nov 2026<|>04 Nov 2026</, 'the visible date is formatted');
+    assert.match(html, /undated/, 'missing dates are labelled');
     assert.match(html, /<time class="src-date"/, 'the date must be a time element');
   }
 

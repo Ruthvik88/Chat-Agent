@@ -1,3 +1,4 @@
+import './setup';
 import assert from 'node:assert/strict';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -343,7 +344,7 @@ async function testCrmRegressions() {
       if (count === 7) assert.match(context, /NOT checked \(search cap\):\n- Insightly offers CRM software/);
       assert.match(context, /Unchanged when evidence restates the same value/);
       assert.match(context, /Changed only when evidence states a different value AND is dated after the original answer/);
-      assert.match(context, /Every price\/number anywhere.*source link/);
+      assert.match(context, /Every price\/number anywhere.*numbered source citation/);
       assert.match(context, /\[dated after original answer\].*\(11 Nov 2026\)/);
       assert.match(context, /\[current page only; cannot establish changed since\].*\(12 Apr 2026\)/);
       assert.match(context, /\[current page only; cannot establish changed since\].*\(undated\)/);

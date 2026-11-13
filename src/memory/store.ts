@@ -1,9 +1,13 @@
 import { appendFile, mkdir, readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import type { CitationCheck } from '../citations';
 import { config } from '../config';
 
 export interface Source {
+  id?: number;
+  domain?: string;
+  excerpt?: string;
   title: string;
   url: string;
   publishedDate?: string;
@@ -24,6 +28,7 @@ export interface StoredTurn {
   sources?: Source[];
   /** Set on assistant turns that answered a question, used by the re-verify flow. */
   citations?: string[];
+  citationChecks?: CitationCheck[];
 }
 
 /**

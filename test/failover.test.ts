@@ -1,4 +1,7 @@
+import './setup';
 import assert from 'node:assert/strict';
+import { runAgent } from '../src/agent';
+import { SessionStore } from '../src/memory/store';
 
 import { resetBreaker } from '../src/llm/breaker';
 import { GeminiProvider } from '../src/llm/gemini';
@@ -160,6 +163,28 @@ async function main() {
     const status = events.find((e) => e.type === 'status');
     assert.ok(status, 'the user must be told about the switch');
     console.log('ok: an aborted request fails over to the fallback model');
+  }
+
+  // Every configured model returns 503: emit a clear retryable error and timings.
+  {
+    resetBreaker();
+    const fake = fakeGemini([{ status: 503, body: SATURATED_503 }, { status: 503, body: SATURATED_503 }]);
+    try {
+      const store = new SessionStore(); await store.init();
+      const provider = new GeminiProvider({ apiKey: 'test', model: 'primary-model', fallbackModel: 'fallback-model' });
+      const events = [];
+      for await (const event of runAgent({ sessionId: 'all-models-failed', message: 'Hello', timezone: 'Asia/Kolkata' }, {
+        store, llm: provider, search: { name: 'unused', async search() { throw new Error('unexpected search'); } },
+      })) events.push(event);
+      const error = events.find((e) => e.type === 'error');
+      assert.ok(error?.type === 'error'); assert.match(error.message, /models.*retry/i);
+      assert.equal(events.filter((e) => e.type === 'text').length, 0);
+      const done = events.find((e) => e.type === 'done'); assert.ok(done?.type === 'done');
+      assert.equal(done.metrics.model_attempts.length, 2);
+      assert.ok(done.metrics.model_attempts.every((a) => a.failed));
+      assert.equal(done.metrics.ttft_ms, null); assert.equal(done.metrics.unaccounted_ms, 0);
+      console.log('all configured models failed: explicit retry error event and failed-attempt timings');
+    } finally { fake.restore(); resetBreaker(); }
   }
 
   console.log('model failover: all assertions passed');

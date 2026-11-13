@@ -1,3 +1,4 @@
+import './setup';
 import assert from 'node:assert/strict';
 
 import { rankSources, sourceKey } from '../src/search/results';

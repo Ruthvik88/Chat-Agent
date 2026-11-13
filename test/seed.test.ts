@@ -1,3 +1,4 @@
+import './setup';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { rm } from 'node:fs/promises';

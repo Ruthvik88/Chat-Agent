@@ -1,3 +1,4 @@
+import './setup';
 import assert from 'node:assert/strict';
 
 import { BREAKER_COOLDOWN_MS, isTripped, resetBreaker, tripBreaker } from '../src/llm/breaker';

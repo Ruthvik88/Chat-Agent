@@ -55,8 +55,8 @@ process-local circuit breaker. Structured calls have their own retry/fallback ch
 
 The eval uses live Tavily when `TAVILY_API_KEY` is set; otherwise it announces a local search stub.
 Each scenario starts a separate server and temporary data directory. The previous latency experiment
-used a persistent server per version, so its results are a different experiment. Tests load the
-configured data directory; use a fresh temporary `DATA_DIR` to keep existing history out of them.
+used a persistent server per version, so its results are a different experiment. Each test imports a setup module that creates a fresh temporary `DATA_DIR`, even for direct `tsx` runs,
+so existing history is not loaded. Child processes inherit that test directory.
 Passing the harness does not prove factual correctness or broad prompt-injection resistance.
 
 ## API and output
@@ -66,13 +66,17 @@ Passing the harness does not prove factual correctness or broad prompt-injection
 `GET /api/health` reports missing key names; `GET /api/sessions/:id` returns stored message turns.
 This prototype does not provide an authentication or multi-user isolation layer.
 
-SSE events are `delta`, `tool`, `status`, `sources`, `error` and `done`. A `tool` event reports a
-requested tool call; deduplication or budgets can prevent an actual search. Normal answer text is
-buffered for citation checks; some re-verify/final-answer paths stream text as it arrives. Clicking
+SSE events are `delta`, `tool`, `status`, `sources`, `citations`, `error` and `done`. A `tool` event reports a
+requested tool call; deduplication or budgets can prevent an actual search. A numbered `sources` mapping arrives before answer tokens. The model sees IDs, titles, domains, dates
+and excerpts, and cites only `[n]`; URLs are supplied by the server and linked by the UI. Text streams
+immediately; separate `citations` updates mark individual unknown or mismatched citations unverified. Clicking
 Stop closes the client request; it does not guarantee immediate cancellation of an in-flight API call.
 
-Normal questions allow three loop steps and up to four search calls; citation repair is separately
-counted and may add a model call. Re-verify checks up to six claims, with up to three searches each
+Source IDs are stable within a turn and never reused for different pages. The six-source limit
+omits later pages once full; follow-ups seed at most three saved sources to leave room for new evidence.
+
+Normal questions allow three loop steps and up to four search calls. There is no citation-repair
+model call and no whole-answer buffering. Re-verify checks up to six claims, with up to three searches each
 before adapter retries. A 434 freshness refusal can retry Tavily without the freshness option.
 The answering step can make one extra search if evidence is missing or extraction failed.
 The same-day re-verify guard skips checking, so it can miss updates between same-day turns.
@@ -81,9 +85,10 @@ Search results require a reported relevance score of at least 0.6, are capped at
 and carry excerpts of at most 500 characters without raw page content. Source lists are deduplicated
 using normalized hostname/path, ignoring query strings; the `sources` event is capped at six pages.
 Sources marked official through an inferred/requested vendor-domain restriction rank first, then score.
-This is not independent verification of vendor identity or claim attribution. Re-verify verdicts and
-per-claim citations depend on model instructions. The normal-answer citation guard checks link
-presence and allowed URLs, not whether every fact is supported.
+This is not independent verification of vendor identity or claim attribution. Re-verify verdicts still depend on model instructions. A deterministic entity guard checks cited
+source titles, URLs and excerpts against vendor/product names and rejects detected cross-vendor
+pricing attribution. Ambiguous/unknown citations stay visible as unverified; a matching name is not
+proof that a value is correct. If all models fail, an error notice offers Retry.
 
 The `done` metrics include visible-output `ttft_ms`, final-call `answer_ttft_ms`, `steps`, `step_count`,
 `model_call_count`, physical `model_attempts`, parallel `search_rounds`, total `model_ms`, `search_ms`,
@@ -91,7 +96,7 @@ measured local `overhead_ms`, and the remaining `unaccounted_ms`. Physical attem
 logical calls and must not be added again. `model_call_1_ms` includes extraction on re-verify turns.
 Non-streaming extraction TTFT and unreported thinking-token counts remain `null`.
 
-## Recorded verification
+## Earlier recorded verification (before source IDs)
 
 On 13 November 2026, using Node.js `v26.13.1` and npm `11.20.0`, I deleted `node_modules` and ran
 `npm install`: 125 packages added, audit reported zero vulnerabilities. npm also reported a deprecated
@@ -118,3 +123,26 @@ again.” The comparison failed its product-coverage check; the injection scenar
 check. It did not fail the marker/system-prompt checks, which is not proof of general injection safety.
 The failed rows measure time to that refusal, not time to a useful factual answer.
 Historical repeated-run latency medians and limitations are in [DESIGN.md](./DESIGN.md).
+
+
+## Source-ID streaming check
+
+After replacing citation repair with streamed numbered citations, `npm test` and `tsc --noEmit`
+passed. All 17 test files establish temporary data directories by default. Mock tests cover unrelated
+Oracle Siebel/Pipedrive and Render/Railway citations, grouped/unknown IDs, partial-answer persistence,
+all-model 503 failure, and the Retry button. UI behavior was checked with mocks and the actual
+renderer; the live pair below used HTTP/SSE rather than browser automation.
+
+One live Neon question and its Railway follow-up ran on the same server with Gemini and Tavily,
+clock pinned to 12 November 2026. Source maps preceded text, neither answer contained generated URLs,
+and each used three model calls with no repair call. The entity guard marked the follow-up’s opening comparison unverified while retaining the other
+claims; identity checks do not establish numerical correctness.
+
+| Question | Client first text | Server TTFT | Text chunks |
+|---|---:|---:|---:|
+| Neon price | 11.902s | 11.856s | 13 |
+| “and the other one?” | 7.352s | 7.347s | 8 |
+
+Both completed using the configured fallback, Gemini 3.5 Flash-Lite. These first-token times still
+exceed six seconds. An earlier attempt was interrupted by a 503; its partial output and error were
+retained separately from this successful pair.

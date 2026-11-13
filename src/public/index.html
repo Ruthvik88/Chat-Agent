@@ -485,7 +485,7 @@
         line-height: 1.5;
       }
       .sources li::before {
-        content: counter(src);
+        content: attr(data-source-id);
         font: 12px/1 var(--mono);
         color: var(--ink-3);
         font-variant-numeric: tabular-nums;
@@ -783,7 +783,7 @@
     </div>
 
     <script type="module">
-      import { renderMarkdown, renderSourcesHtml } from './markdown.js';
+      import { renderMarkdown, renderCitedMarkdown, renderSourcesHtml } from './markdown.js';
 
       'use strict';
 
@@ -931,7 +931,7 @@
         col.appendChild(wrap);
       }
 
-      function renderTurn(role, text, ts, sources) {
+      function renderTurn(role, text, ts, sources, citationChecks) {
         var article = document.createElement('article');
         article.className = 'turn turn-' + role;
 
@@ -957,7 +957,7 @@
         if (role === 'user') {
           body.textContent = text;
         } else {
-          body.innerHTML = renderMarkdown(text);
+          body.innerHTML = renderCitedMarkdown(text, sources || [], citationChecks || []);
           decorateVerdicts(body);
         }
         article.appendChild(body);
@@ -977,6 +977,7 @@
       }
 
       function renderNotice(title, body, retry) {
+        var retryMessage = lastMessage;
         var box = document.createElement('div');
         box.className = 'notice notice-error';
         box.setAttribute('role', 'alert');
@@ -995,10 +996,10 @@
           var btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'btn btn-quiet';
-          btn.textContent = 'Try again';
+          btn.textContent = 'Retry';
           btn.addEventListener('click', function () {
             box.remove();
-            send(lastMessage);
+            send(retryMessage);
           });
           box.appendChild(btn);
         }
@@ -1026,6 +1027,7 @@
                 turn.text,
                 turn.ts,
                 turn.sources,
+                turn.citationChecks,
               );
             });
             scrollToEnd(true);
@@ -1077,6 +1079,8 @@
         setHint('');
 
         var answer = '';
+        var answerSources = [];
+        var citationChecks = [];
         var frame = null;
         var pendingRender = false;
 
@@ -1084,7 +1088,7 @@
           frame = null;
           if (!pendingRender) return;
           pendingRender = false;
-          body.innerHTML = renderMarkdown(answer);
+          body.innerHTML = renderCitedMarkdown(answer, answerSources, citationChecks);
           decorateVerdicts(body);
           scrollToEnd(false);
         }
@@ -1167,8 +1171,13 @@
                   } else if (event === 'tool') {
                     if (payload.args && payload.args.query) addQuery(payload.args.query);
                   } else if (event === 'sources') {
+                    answerSources = payload.sources || [];
                     sourcesBox.textContent = '';
-                    sourcesBox.appendChild(renderSources(payload.sources || []));
+                    if (answerSources.length) sourcesBox.appendChild(renderSources(answerSources));
+                    schedule();
+                  } else if (event === 'citations') {
+                    citationChecks = payload.checks || [];
+                    schedule();
                   } else if (event === 'error') {
                     article.appendChild(
                       renderNotice(
@@ -1188,7 +1197,7 @@
           })
           .then(function () {
             if (answer) {
-              body.innerHTML = renderMarkdown(answer);
+              body.innerHTML = renderCitedMarkdown(answer, answerSources, citationChecks);
               decorateVerdicts(body);
             } else if (!article.querySelector('.notice')) {
               body.innerHTML = '<p>No answer came back. Ask again to try.</p>';
@@ -1198,7 +1207,7 @@
           .catch(function (err) {
             if (err && err.name === 'AbortError') {
               if (answer) {
-                body.innerHTML = renderMarkdown(answer);
+                body.innerHTML = renderCitedMarkdown(answer, answerSources, citationChecks);
                 decorateVerdicts(body);
                 var note = document.createElement('p');
                 note.className = 'note';

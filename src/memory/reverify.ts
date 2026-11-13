@@ -1,3 +1,4 @@
+import { withoutUrls } from '../citations';
 import { rankSources, sourceKey } from '../search/results';
 import { zonedParts, type DateRef } from './dates';
 import { renderRecalledContext, tokenize } from './recall';
@@ -280,7 +281,7 @@ export async function* reverifyAnswer(opts: {
       claims: Array<{ claim: string; subject: string; queries: string[]; vendorDomain?: string }>;
     }>({
       system: EXTRACT_SYSTEM,
-      turns: [{ role: 'user', text: `Previous answer:\n\n${earlier.text}` }],
+      turns: [{ role: 'user', text: `Previous answer:\n\n${withoutUrls(earlier.text).replace(/\[\d+(?:\s*,\s*\d+)*\]/g, '')}` }],
       responseSchema: CLAIM_SCHEMA as unknown as Record<string, unknown>,
     });
     claims = (extracted.claims ?? [])
@@ -349,7 +350,7 @@ export async function* reverifyAnswer(opts: {
             && date.getTime() > new Date(earlier.ts).getTime() && date.getTime() <= now.getTime();
           const timing = inWindow ? 'dated after original answer' : 'current page only; cannot establish changed since';
           hits.push({ key, text: `${label} [${timing}] ${r.title} (${formatEvidenceDate(r.publishedDate)}) ${r.url}\n${r.content.slice(0, 500)}` });
-          sources.push({ title: r.title, url: r.url, publishedDate: r.publishedDate, score: r.score, official: r.official });
+          sources.push({ title: r.title, url: r.url, publishedDate: r.publishedDate, score: r.score, official: r.official, excerpt: r.content.slice(0, 500) });
         }
       };
 
@@ -429,7 +430,7 @@ function formatEvidenceDate(value?: string): string {
 }
 
 /** Renders a re-verify report into a context block for the model. */
-export function renderReverifyContext(report: ReverifyReport): string {
+export function renderReverifyContext(report: ReverifyReport, numberedSources?: Source[]): string {
   if (report.notFound) {
     return [
       '<reverify>',
@@ -468,21 +469,24 @@ export function renderReverifyContext(report: ReverifyReport): string {
     ].join('\n');
   }
   const evidencePages = new Map<string, number>();
+  for (const source of numberedSources ?? []) evidencePages.set(sourceKey(source.url), source.id!);
+  const shown = new Set<string>();
   const lines = report.checks.map((c) => {
     const evidence = c.evidence.length
       ? c.evidence.map((e) => {
         const url = e.match(/https?:\/\/\S+/)?.[0];
         const key = url ? sourceKey(url) : e;
         const existing = evidencePages.get(key);
-        if (existing) return `    See evidence source ${existing} above (same page, not another result).`;
-        const id = evidencePages.size + 1;
+        if (shown.has(key)) return `    See evidence source ${existing} above (same page, not another result).`;
+        const id = existing ?? evidencePages.size + 1;
+        shown.add(key);
         evidencePages.set(key, id);
         return `    Evidence source ${id}: ${e}`;
       }).join('\n')
       : '    (no search results for this claim)';
     return `- Claim: ${c.claim}\n  Evidence:\n${evidence}`;
   });
-  return [
+  const rendered = [
     '<reverify>',
     `The user's earlier answer, given at ${report.answeredAt} (local day ${report.answerDate}), was checked`,
     'against fresh web search results.',
@@ -494,14 +498,19 @@ export function renderReverifyContext(report: ReverifyReport): string {
     'Evidence that is undated or older than the answer can support current page says X, never changed since.',
     'Otherwise use Could not verify. A different plan name alone does not prove a price changed.',
     'For each row consult vendor-domain search evidence first. Cite a relevant official vendor page in preference to blogs or forums, even if the vendor page is undated or older (it can confirm a current value). Use third-party evidence only if official evidence does not address the claim.',
-    'Every price/number anywhere in the answer (including Claim cells) must carry a supporting source link; otherwise drop it or explicitly mark it unverified.',
-    'The Evidence cell gives the date as 12 Nov 2026 (or undated) and a markdown link to the source URL.',
+    'Every price/number anywhere in the answer (including Claim cells) must carry a supporting numbered source citation [n]; otherwise drop it or explicitly mark it unverified.',
+    'The Evidence cell gives the date as 12 Nov 2026 (or undated) and a numbered source citation [n].',
     'If a claim has no evidence at all, its verdict is Could not verify — never guess.',
     ...lines,
     ...(report.uncheckedClaims?.length ? ['NOT checked (search cap):', ...report.uncheckedClaims.map((c) => `- ${c}`)] : []),
-    'Final output check: every price/number must have a supporting markdown link in its cell or be explicitly labelled unverified. Use the formatted evidence dates above. Prefer relevant official vendor evidence. Do not add a summary or claim there were no releases: absence of search evidence does not establish that nothing shipped. Name every NOT checked claim after the table if any were listed.',
+    'Final output check: every price/number must have a supporting numbered source citation [n] in its cell or be explicitly labelled unverified. Use the formatted evidence dates above. Prefer relevant official vendor evidence. Do not add a summary or claim there were no releases: absence of search evidence does not establish that nothing shipped. Name every NOT checked claim after the table if any were listed.',
     '</reverify>',
   ].join('\n');
+  if (!numberedSources) return rendered;
+  return rendered.replace(/https?:\/\/\S+/g, (url) => {
+    const source = numberedSources.find((s) => sourceKey(s.url) === sourceKey(url));
+    return source ? `[${source.id}]` : '(source unavailable)';
+  });
 }
 
 export { renderRecalledContext };

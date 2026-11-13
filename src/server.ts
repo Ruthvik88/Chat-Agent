@@ -45,7 +45,7 @@ app.get('/api/sessions/:id', async (req, res) => {
   const turns = store
     .get(sessionId)
     .filter((t) => t.kind === 'message' && t.text.trim())
-    .map((t) => ({ role: t.role, text: t.text, ts: t.ts, sources: t.sources ?? [] }));
+    .map((t) => ({ role: t.role, text: t.text, ts: t.ts, sources: t.sources ?? [], citationChecks: t.citationChecks ?? [] }));
   res.json({ sessionId, turns });
 });
 
@@ -195,6 +195,8 @@ function mapEvent(event: AgentEvent): string {
       return 'tool';
     case 'sources':
       return 'sources';
+    case 'citations':
+      return 'citations';
     case 'error':
       return 'error';
     case 'done':

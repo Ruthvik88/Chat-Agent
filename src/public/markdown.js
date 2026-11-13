@@ -242,6 +242,37 @@ export function renderMarkdown(src) {
   return out.join('\n');
 }
 
+/** Model text cannot create links; only validated IDs can use the server's URLs. */
+export function renderCitedMarkdown(text, sources, checks) {
+  var raw = String(text).replace(/\u0000/g, '');
+  var replaced = raw.replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, function (marker, ids, offset) {
+    return ids.split(',').map(function (value) {
+      var id = Number(value);
+      var source = (sources || []).find(function (s) { return s.id === Number(id); });
+      var check = (checks || []).find(function (c) { return c.offset === offset && c.id === Number(id); });
+      var href = source && safeUrl(source.url);
+      // Protect the server-owned link from the URL-removal pass below.
+      if (source && check && check.verified && href && /^https?:/.test(href)) return '\u0000CITE' + id + '\u0000';
+      return '**[' + id + '] unverified**';
+    }).join(' ');
+  });
+  replaced = replaced.replace(/\[([^\]]*)\]\([^\s)]+\)/g, '$1 **(unverified URL)**')
+    .replace(/https?:\/\/[^\s<>]+/g, '**(unverified URL)**');
+  // A rejected re-verify citation cannot leave a green Changed/Unchanged verdict.
+  replaced = replaced.split('\n').map(function (line) {
+    if (!/^\s*\|/.test(line) || !/\*\*\[\d+\] unverified\*\*/.test(line)) return line;
+    var cells = line.split('|');
+    if (/^\s*(Changed|Unchanged|Could not verify)\s*$/i.test(cells[2] || '')) cells[2] = ' Unverified ';
+    return cells.join('|');
+  }).join('\n');
+  // Render first; URL placeholders cannot introduce user-controlled HTML.
+  var html = renderMarkdown(replaced);
+  return html.replace(/\u0000CITE(\d+)\u0000/g, function (_, id) {
+    var source = sources.find(function (s) { return s.id === Number(id); });
+    return link(safeUrl(source.url), '[' + escapeHtml(id) + ']');
+  });
+}
+
 /**
  * The numbered source list under an answer.
  *
@@ -256,10 +287,13 @@ export function renderSourcesHtml(sources) {
       var href = safeUrl(s.url);
       var body = href ? link(href, title) : '<span>' + title + '</span>';
       if (s.publishedDate) {
-        var date = escapeHtml(s.publishedDate);
-        body += ' <time class="src-date" datetime="' + date + '">' + date + '</time>';
+        var parsed = new Date(s.publishedDate);
+        var date = Number.isFinite(parsed.getTime()) ? new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(parsed) : 'undated';
+        body += ' <time class="src-date" datetime="' + escapeHtml(s.publishedDate) + '">' + escapeHtml(date) + '</time>';
+      } else {
+        body += ' <span class="src-date">undated</span>';
       }
-      return '<li>' + body + '</li>';
+      return '<li data-source-id="' + escapeHtml(s.id || '') + '">' + body + '</li>';
     })
     .join('');
   return '<ol class="sources">' + items + '</ol>';

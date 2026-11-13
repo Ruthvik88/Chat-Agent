@@ -1,3 +1,4 @@
+import './setup';
 import assert from 'node:assert/strict';
 
 import { resolveDateRefs, zonedParts } from '../src/memory/dates';
